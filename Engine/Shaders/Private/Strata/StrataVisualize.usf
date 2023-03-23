@@ -1,0 +1,581 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "/Engine/Private/Common.ush"
+#include "/Engine/Private/DeferredShadingCommon.ush"
+
+#define STRATA_INLINE_SHADING 0
+#define STRATA_SSS_MATERIAL_OVERRIDE 0
+#define STRATA_SSS_TRANSMISSION 0  // Disable for now, as the SSS profile texture need to be bound
+#include "/Engine/Private/Strata/StrataEvaluation.ush"
+
+#include "/Engine/Private/MiniFontCommon.ush"
+#include "/Engine/Private/ShaderDrawDebug.ush"
+
+
+void DrawReferentialTWS(float3 P /*In Translated World Space*/, float3 X, float3 Y, float3 N, float3 InColor)
+{
+	const float Size = 10.f;
+	const float SizeWithTip = 12.0f;
+	const float4 Color = float4(InColor, 1);
+	const float4 ColorX = float4(1, 0, 0, 1);
+	const float4 ColorY = float4(0, 1, 0, 1);
+	const float4 ColorZ = float4(0, 0, 1, 1);
+
+	// Core
+	AddLineTWS(P, P + X * Size, Color, Color);
+	AddLineTWS(P, P + Y * Size, Color, Color);
+	AddLineTWS(P, P + N * Size, Color, Color);
+	// Tips
+	AddLineTWS(P + X * Size, P + X * SizeWithTip, ColorX, ColorX);
+	AddLineTWS(P + Y * Size, P + Y * SizeWithTip, ColorY, ColorY);
+	AddLineTWS(P + N * Size, P + N * SizeWithTip, ColorZ, ColorZ);
+}
+
+float3 DrawPlot(
+	const float3 V, 
+	const FStrataPixelHeader Header,
+	const FStrataBSDF BSDF, 
+	const FStrataAddressing StrataAddressing,
+	uint2 PixelCoord, 
+	uint2 RectOffset, 
+	uint2 RectSize)
+{
+	float3 Out = 0;
+
+	const uint2 LocalCoord = PixelCoord - RectOffset;
+	const float2 UV			= float2(PixelCoord - RectOffset) / float2(RectSize);
+	const float2 ProjCoord = UV * 2 - 1;
+	if (all(UV >= 0) && all(UV <= 1) && (Pow2(ProjCoord.x) + Pow2(ProjCoord.y) <1))
+	{
+		const float SinTheta = sqrt(Pow2(ProjCoord.x) + Pow2(ProjCoord.y));
+		const float CosTheta = sqrt(1 - Pow2(SinTheta));
+		const float3 L = float3(ProjCoord, CosTheta);
+
+		const float3x3 Basis = StrataGetBSDFSharedBasis(Header, BSDF, StrataAddressing);
+		float3 LocalV = mul(Basis, V);
+		if (LocalV.z < 0)
+		{
+			LocalV.z = 0;
+			LocalV = normalize(LocalV);
+		}
+
+		float3x3 TangentBasis;
+		TangentBasis[0] = float3(1, 0, 0);
+		TangentBasis[1] = float3(0, 1, 0);
+		TangentBasis[2] = float3(0, 0, 1);
+
+		FStrataBSDFContext BSDFContext = StrataCreateBSDFContext(TangentBasis, BSDF, LocalV, L, true);
+		FStrataEvaluateResult BSDFEvaluate = StrataEvaluateBSDF(BSDFContext, Strata.bRoughDiffuse);
+		Out = (BSDFEvaluate.DiffusePathValue + BSDFEvaluate.SpecularPathValue + BSDFEvaluate.TransmissionPathValue) * BSDFContext.SatNoL; // * BSDF.Weight
+	}
+	return Out;
+}
+
+void VisualizeMaterialPS(
+	float4 SVPos : SV_POSITION,
+	out float4 OutColor : SV_Target0)
+{
+	const uint2 PixelPos = uint2(SVPos.xy);
+	const uint2 MaterialPos = View.CursorPosition;
+	float2 BufferUV = SvPositionToBufferUV(float4(MaterialPos, SVPos.zw));
+	const int  InspectSquare = 10;
+
+	FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(MaterialPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+	FStrataPixelHeader Header = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+	bool bStrataMaterial = Header.BSDFCount > 0;
+
+	const float2 ScreenPosition = SvPositionToScreenPosition(SVPos).xy;
+	const float2 ScreenMaterialPosition = SvPositionToScreenPosition(float4(MaterialPos, 0.5f, 1)).xy;
+	float DeviceZ = SampleDeviceZFromSceneTextures(BufferUV);
+	float SceneDepth = ConvertFromDeviceZ(DeviceZ);
+	const float3 WorldPosition = mul(float4(ScreenMaterialPosition * SceneDepth, SceneDepth, 1), PrimaryView.ScreenToTranslatedWorld).xyz;
+	const float3 V = -normalize(WorldPosition - PrimaryView.TranslatedWorldCameraOrigin);
+
+#if 0
+	OutColor = 0;
+	if (Header.BSD)
+	{
+		OutColor.w = 0.05f;
+		if (Header.BSDFCount == 1)
+		{
+			OutColor = float4(0, 0, 1, 0);
+		}
+		else if (Header.BSDFCount == 2)
+		{
+			OutColor = float4(0, 1, 0, 0);
+		}
+		else if (Header.BSDFCount == 3)
+		{
+			OutColor = float4(1, 1, 0, 0);
+		}
+		else if (Header.BSDFCount == 4)
+		{
+			OutColor = float4(1, 0, 0, 0);
+		}
+		else if (Header.BSDFCount > 4)
+		{
+			OutColor = float4(1, 1, 1, 0);
+		}
+	}
+	return;
+#endif
+
+#if 0	// STRATA_TODO generalise this visualisation to more properties
+	{
+		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+		const uint PixelStrataDataByteOffsetStart = StrataAddressing.ReadBytes;
+
+		FStrataPixelHeader Header2 = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+		const uint PixelStrataDataByteOffsetPostHeader = StrataAddressing.ReadBytes;
+
+		if (HasSubsurface(Header2) || HasSubsurfaceProfile(Header2))
+		{
+			OutColor = float4(HasSubsurfaceProfile(Header2) ? 1 : 0, HasSubsurface(Header2) ? 1 : 0, 0, 0.5);
+			return;
+		}
+	}
+#endif
+
+	OutColor = float4(0.0f, 0.0f, 0.0f, 1.0f);
+
+	// Plot BSDFs
+	bool bPlotValid = false;
+	if (bStrataMaterial)
+	{
+		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+
+		FStrataPixelHeader Header = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+
+		for (uint BSDFIndex = 0; BSDFIndex < Header.BSDFCount; ++BSDFIndex)
+		{
+			const FStrataBSDF BSDF = UnpackStrataBSDFIn(Strata.MaterialTextureArray, StrataAddressing, Header);
+
+			// Referential
+			if (all(PixelPos == MaterialPos))
+			{
+				FStrataBSDFContext BSDFContext = StrataCreateBSDFContext(Header, BSDF, StrataAddressing, V, float3(0,0,1));
+				DrawReferentialTWS(WorldPosition, BSDFContext.X, BSDFContext.Y, BSDFContext.N, float3(1,1,0));
+			}
+
+			// Plot
+			{
+				const uint2 Resolution = 180;
+				const uint OffsetX = 50 + BSDFIndex * 200;
+				const uint OffsetY = 50;
+				OutColor.xyz += DrawPlot(V, Header, BSDF, StrataAddressing, PixelPos, uint2(OffsetX, OffsetY), Resolution);
+			}
+		}
+
+		// Background
+		if (dot(OutColor.xyz, float3(1, 1, 1)) > 0)
+		{
+			OutColor.w = 0;
+			bPlotValid = true;
+		}
+	}
+
+	// Print BSDFs attributes
+	if (bStrataMaterial)
+	{
+		uint2 RectMin = uint2(MaterialPos + InspectSquare);
+		uint2 RectMax = RectMin;
+
+		const FStrataTopLayerData TopLayerData = StrataUnpackTopLayerData(Strata.TopLayerTexture.Load(uint3(MaterialPos, 0)));
+		const FStrataSubsurfaceData SSSData = StrataUnpackSSSData(Strata.SSSTexture.Load(uint3(MaterialPos, 0)));
+
+		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(MaterialPos, uint2(View.BufferSizeAndInvSize.xy), Strata.MaxBytesPerPixel);
+		const uint PixelStrataDataByteOffsetStart = StrataAddressing.ReadBytes;
+
+		FStrataPixelHeader Header = UnpackStrataHeaderIn(Strata.MaterialTextureArray, StrataAddressing, Strata.TopLayerTexture);
+		const uint PixelStrataDataByteOffsetPostHeader = StrataAddressing.ReadBytes;
+
+		float3 BSDFFontColor = float3(0.25, 1.0, 0.25);
+		float3 BSDFFontColorGrey = float3(0.25, 0.25, 0.25);
+		float3 INFOFontColor = float3(1.0, 0.5, 0.25);
+		float3 PARAMFontColor = float3(0.8, 0.8, 0.8);
+		float3 FontColor = float3(0.25, 1.0, 1.0);
+		uint2 TopLeftInit = MaterialPos + InspectSquare + uint2(3, 3);
+		uint2 TopLeft = TopLeftInit;
+
+#define PRINTPARAMCHAR(X) PrintCharacter(PixelPos, OutColor.xyz, PARAMFontColor, TopLeft, X);
+#define PRINTINFOCHAR(X) PrintCharacter(PixelPos, OutColor.xyz, INFOFontColor, TopLeft, X);
+#define PRINTBSDFCHAR(X) PrintCharacter(PixelPos, OutColor.xyz, BSDFFontColor, TopLeft, X);
+#define PRINTBSDFCHARGREY(X) PrintCharacter(PixelPos, OutColor.xyz, BSDFFontColorGrey, TopLeft, X);
+
+#define PRINTBSDFWEIGHT()	PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_MINUS_); PRINTBSDFCHAR(_W_); PRINTBSDFCHAR(_E_); PRINTBSDFCHAR(_I_); PRINTBSDFCHAR(_G_); PRINTBSDFCHAR(_H_);PRINTBSDFCHAR(_T_);  PRINTBSDFCHAR(_SPC_); PrintFloat(PixelPos, OutColor.xyz, FontColor, TopLeft, BSDF.FinalWeight.x); TopLeft.x+=8*7; PRINTBSDFCHAR(_SPC_); PrintFloat(PixelPos, OutColor.xyz, FontColor, TopLeft, BSDF.FinalWeight.y); TopLeft.x+=8*7; PRINTBSDFCHAR(_SPC_); PrintFloat(PixelPos, OutColor.xyz, FontColor, TopLeft, BSDF.FinalWeight.z); TopLeft.x+=8*7; 
+#define PRINTBSDFGREYWEIGHT()PRINTBSDFCHAR(_SPC_);PRINTBSDFCHARGREY(_MINUS_); PRINTBSDFCHARGREY(_W_); PRINTBSDFCHARGREY(_E_); PRINTBSDFCHARGREY(_I_); PRINTBSDFCHARGREY(_G_); PRINTBSDFCHARGREY(_H_);PRINTBSDFCHARGREY(_T_);  PRINTBSDFCHAR(_SPC_); PrintFloat(PixelPos, OutColor.xyz, FontColor, TopLeft, Unpack10F(BSDF_GETWEIGHT10F(BSDF))); TopLeft.x+=8*23; 
+#define PRINTBSDFSHAREDLOCALBASISID()	PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_MINUS_); PRINTBSDFCHAR(_N_); PRINTBSDFCHAR(_R_); PRINTBSDFCHAR(_M_); PRINTBSDFCHAR(_I_); PRINTBSDFCHAR(_D_); PRINTBSDFCHAR(_SPC_); PrintFloatNoFraction(PixelPos, OutColor.xyz, FontColor, TopLeft, float(BSDF_GETSHAREDLOCALBASISID(BSDF)), 1); TopLeft.x+=8*1;
+#define PRINTBSDFANISO()	PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_MINUS_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_N_); PRINTBSDFCHAR(_I_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_O_); PRINTBSDFCHAR(_SPC_); PrintFloatNoFraction(PixelPos, OutColor.xyz, FontColor, TopLeft, float(BSDF_GETHASANISOTROPY(BSDF)), 1); TopLeft.x+=8*1;
+#define PRINTBSDFTOPLAY()	PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_MINUS_); PRINTBSDFCHAR(_T_); PRINTBSDFCHAR(_O_); PRINTBSDFCHAR(_P_); PRINTBSDFCHAR(_L_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_Y_); PRINTBSDFCHAR(_SPC_); PrintFloatNoFraction(PixelPos, OutColor.xyz, FontColor, TopLeft, float(BSDF_GETISTOPLAYER(BSDF)), 1); TopLeft.x+=8*1;
+#define PRINTBSDFHASSCAT()	PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_MINUS_); PRINTBSDFCHAR(_H_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_C_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_T_); PRINTBSDFCHAR(_SPC_); PrintFloatNoFraction(PixelPos, OutColor.xyz, FontColor, TopLeft, float(BSDF_GETHASSSS(BSDF)), 1); TopLeft.x+=8*1;
+#define PRINTBSDFSIMPSCAT()	PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_MINUS_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_I_); PRINTBSDFCHAR(_M_); PRINTBSDFCHAR(_P_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_C_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_T_); PRINTBSDFCHAR(_SPC_); PrintFloatNoFraction(PixelPos, OutColor.xyz, FontColor, TopLeft, float(BSDF_GETISSIMPLEVOLUME(BSDF)), 1); TopLeft.x+=8*1;
+#define PRINTBSDFISTHIN()	PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_MINUS_); PRINTBSDFCHAR(_I_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_T_); PRINTBSDFCHAR(_H_); PRINTBSDFCHAR(_I_); PRINTBSDFCHAR(_N_); PRINTBSDFCHAR(_SPC_); PrintFloatNoFraction(PixelPos, OutColor.xyz, FontColor, TopLeft, float(BSDF_GETISTHIN(BSDF)), 1); TopLeft.x+=8*1;
+#define PRINTFLOAT3(X) PrintFloat(PixelPos, OutColor.xyz, PARAMFontColor, TopLeft, X.x); TopLeft.x+=8*7; PRINTBSDFCHAR(_SPC_); PrintFloat(PixelPos, OutColor.xyz, PARAMFontColor, TopLeft, X.y); TopLeft.x+=8*7; PRINTBSDFCHAR(_SPC_); PrintFloat(PixelPos, OutColor.xyz, PARAMFontColor, TopLeft, X.z);
+#define PRINTFLOAT1(Value) PrintFloat(PixelPos, OutColor.xyz, PARAMFontColor, TopLeft, Value); TopLeft.x+=8*7;
+#define PRINTFLOATNOFRAC(Value, DigitCount) PrintFloatNoFraction(PixelPos, OutColor.xyz, PARAMFontColor, TopLeft, Value, DigitCount); TopLeft.x+=8*7;
+#define SIGNOFFLOAT1(Value) if(Value < 0.0f) { PrintCharacter(PixelPos, OutColor.xyz, PARAMFontColor, TopLeft, _MINUS_); } /*else { PrintCharacter(PixelPos, OutColor.xyz, PARAMFontColor, TopLeft, _SPC_);}*/
+
+#define PRINTBSDFCOUNT()	PRINTBSDFCHAR(min(_0_+Header.BSDFCount,_F_)); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_B_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_D_); PRINTBSDFCHAR(_F_);
+#define PRINTMATERIALAO()	PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_O_); PRINTBSDFCHAR(_SPC_); PRINTFLOAT1(Header.MaterialAO);
+#define PRINTMATERIALSKIPPRECSHADOWMASK()	PRINTBSDFCHAR(_H_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_P_); PRINTBSDFCHAR(_R_); PRINTBSDFCHAR(_E_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_H_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_D_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_0_+(HasPrecShadowMask(Header)?1:0));
+#define PRINTMATERIALZEROPRECSHADOWMASK()	PRINTBSDFCHAR(_Z_); PRINTBSDFCHAR(_E_); PRINTBSDFCHAR(_R_); PRINTBSDFCHAR(_O_); PRINTBSDFCHAR(_P_); PRINTBSDFCHAR(_R_); PRINTBSDFCHAR(_E_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_H_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_D_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_0_+(HasZeroPrecShadowMask(Header)?1:0));
+#define PRINTMATERIALSLW()	PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_L_); PRINTBSDFCHAR(_W_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_0_+(IsSingleLayerWater(Header)?1:0));
+#define PRINTMATERIALCONTSHAD()	PRINTBSDFCHAR(_C_); PRINTBSDFCHAR(_O_); PRINTBSDFCHAR(_N_);  PRINTBSDFCHAR(_T_); PRINTBSDFCHAR(_SPC_);PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_H_); PRINTBSDFCHAR(_A_);  PRINTBSDFCHAR(_D_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_0_+(DoesCastContactShadow(Header)?1:0));
+#define PRINTMATERIALINDSHAD()	PRINTBSDFCHAR(_I_); PRINTBSDFCHAR(_N_); PRINTBSDFCHAR(_D_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_H_); PRINTBSDFCHAR(_A_);  PRINTBSDFCHAR(_D_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_0_+(HasDynamicIndirectShadowCasterRepresentation(Header)?1:0));
+
+#define PRINTCLASSIFROUGH()		PRINTBSDFCHAR(_C_); PRINTBSDFCHAR(_L_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_DOT_); PRINTBSDFCHAR(_R_) PRINTBSDFCHAR(_O_) PRINTBSDFCHAR(_U_) PRINTBSDFCHAR(_G_) PRINTBSDFCHAR(_H_) PRINTBSDFCHAR(_SPC_);	PRINTBSDFCHAR(_SPC_); PRINTFLOAT1(TopLayerData.Roughness);
+#define PRINTCLASSIFBASCOL()	PRINTBSDFCHAR(_C_); PRINTBSDFCHAR(_L_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_DOT_); PRINTBSDFCHAR(_B_) PRINTBSDFCHAR(_A_) PRINTBSDFCHAR(_S_) PRINTBSDFCHAR(_C_) PRINTBSDFCHAR(_O_) PRINTBSDFCHAR(_L_);	PRINTBSDFCHAR(_SPC_); PRINTFLOAT3(SSSData.BaseColor);
+#define PRINTCLASSIFISPROF()	PRINTBSDFCHAR(_C_); PRINTBSDFCHAR(_L_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_DOT_); PRINTBSDFCHAR(_I_) PRINTBSDFCHAR(_S_) PRINTBSDFCHAR(_P_) PRINTBSDFCHAR(_R_) PRINTBSDFCHAR(_O_) PRINTBSDFCHAR(_F_);	PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(SSSData.bIsProfile?_1_:_0_);
+#define PRINTCLASSIFPROID()		PRINTBSDFCHAR(_C_); PRINTBSDFCHAR(_L_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_DOT_); PRINTBSDFCHAR(_P_) PRINTBSDFCHAR(_R_) PRINTBSDFCHAR(_O_) PRINTBSDFCHAR(_I_) PRINTBSDFCHAR(_D_) PRINTBSDFCHAR(_SPC_);	PRINTBSDFCHAR(_SPC_); PRINTFLOATNOFRAC(SSSData.ProfileId, 3);
+#define PRINTCLASSIFPROSCL()	PRINTBSDFCHAR(_C_); PRINTBSDFCHAR(_L_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_DOT_); PRINTBSDFCHAR(_P_) PRINTBSDFCHAR(_R_) PRINTBSDFCHAR(_O_) PRINTBSDFCHAR(_S_) PRINTBSDFCHAR(_C_) PRINTBSDFCHAR(_L_);	PRINTBSDFCHAR(_SPC_); PRINTFLOAT1(SSSData.ProfileRadiusScale);
+#define PRINTCLASSIFSSDMFP()	PRINTBSDFCHAR(_C_); PRINTBSDFCHAR(_L_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_DOT_); PRINTBSDFCHAR(_S_) PRINTBSDFCHAR(_S_) PRINTBSDFCHAR(_D_) PRINTBSDFCHAR(_M_) PRINTBSDFCHAR(_F_) PRINTBSDFCHAR(_P_);	PRINTBSDFCHAR(_SPC_); PRINTFLOAT3(SSSData.DMFP);
+
+#define NEXTLINE  TopLeft.y += 8; RectMax.x = max(RectMax.x, TopLeft.x); RectMax.y = max(RectMax.y, TopLeft.y); TopLeft.x = TopLeftInit.x; 
+#define HORIZONTALSEPARATION  TopLeft.y += 4;
+#define HORIZONTALTAB  TopLeft.x += 8;
+
+#if PERMUTATION_BSDF_PASS==0
+		PRINTINFOCHAR(_T_); PRINTINFOCHAR(_O_); PRINTINFOCHAR(_P_);
+		NEXTLINE;
+		HORIZONTALSEPARATION;
+		PRINTBSDFCOUNT();
+		NEXTLINE;
+		PRINTMATERIALAO();
+		NEXTLINE;
+		PRINTMATERIALSLW();
+		NEXTLINE;
+		PRINTMATERIALSKIPPRECSHADOWMASK();
+		NEXTLINE;
+		PRINTMATERIALZEROPRECSHADOWMASK();
+		NEXTLINE;
+		PRINTMATERIALCONTSHAD();
+		NEXTLINE;
+		PRINTMATERIALINDSHAD();
+		NEXTLINE;
+
+		PRINTCLASSIFROUGH();
+		NEXTLINE;
+		if (HasSubsurface(Header))
+		{
+			PRINTCLASSIFBASCOL();
+			NEXTLINE;
+			PRINTCLASSIFISPROF();
+			NEXTLINE;
+			if (SSSData.bIsProfile)
+			{
+				PRINTCLASSIFPROID();
+				NEXTLINE;
+				PRINTCLASSIFPROSCL();
+				NEXTLINE;
+			}
+			else
+			{
+				PRINTCLASSIFSSDMFP();
+				NEXTLINE;
+				NEXTLINE;
+			}
+		}
+		else
+		{
+			PRINTBSDFCHAR(_N_); PRINTBSDFCHAR(_O_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_S_);
+			NEXTLINE;
+		}
+
+		HORIZONTALSEPARATION;
+#else
+		NEXTLINE;
+		HORIZONTALSEPARATION;
+		NEXTLINE;
+		NEXTLINE;
+		NEXTLINE;
+		NEXTLINE;
+		NEXTLINE;
+		NEXTLINE;
+		NEXTLINE;
+
+		NEXTLINE;
+		if (HasSubsurface(Header))
+		{
+			NEXTLINE;
+			NEXTLINE;
+			if (SSSData.bIsProfile)
+			{
+				NEXTLINE;
+				NEXTLINE;
+			}
+			else
+			{
+				NEXTLINE;
+				NEXTLINE;
+			}
+		}
+		else
+		{
+			NEXTLINE;
+		}
+
+		HORIZONTALSEPARATION;
+#endif
+
+		LOOP
+		for (uint BSDFIndex = 0; BSDFIndex < Header.BSDFCount; ++BSDFIndex)
+		{
+			const FStrataBSDF BSDF = UnpackStrataBSDFIn(Strata.MaterialTextureArray, StrataAddressing, Header);
+
+			TopLeft.x = TopLeftInit.x;
+
+			switch (BSDF_GETTYPE(BSDF))
+			{
+			case STRATA_BSDF_TYPE_SLAB:
+#if PERMUTATION_BSDF_PASS==0
+				PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_L_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_B_); PRINTBSDFCHAR(_SPC_);
+				PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_SPC_);
+				if (BSDF_GETHASGREYWEIGHT(BSDF))
+				{
+					PRINTBSDFGREYWEIGHT();
+				}
+				else
+				{
+					PRINTBSDFWEIGHT();
+				}
+				PRINTBSDFSHAREDLOCALBASISID();
+				PRINTBSDFANISO();
+				PRINTBSDFTOPLAY();
+				PRINTBSDFHASSCAT();
+				PRINTBSDFSIMPSCAT();
+				PRINTBSDFISTHIN();
+				NEXTLINE;
+
+				HORIZONTALTAB; PRINTPARAMCHAR(_D_); PRINTPARAMCHAR(_I_); PRINTPARAMCHAR(_F_); PRINTPARAMCHAR(_F_); PRINTPARAMCHAR(_U_); PRINTPARAMCHAR(_S_); 
+				HORIZONTALTAB; PRINTFLOAT3(SLAB_DIFFUSEALBEDO(BSDF));
+				NEXTLINE;
+
+				HORIZONTALTAB; PRINTPARAMCHAR(_F_); PRINTPARAMCHAR(_0_); PRINTPARAMCHAR(_SPC_); PRINTPARAMCHAR(_SPC_); PRINTPARAMCHAR(_SPC_); PRINTPARAMCHAR(_SPC_);
+				HORIZONTALTAB; PRINTFLOAT3(SLAB_F0(BSDF));
+				NEXTLINE;
+
+				if (BSDF_GETHASF90(BSDF))
+				{
+					HORIZONTALTAB; PRINTPARAMCHAR(_F_); PRINTPARAMCHAR(_9_); PRINTPARAMCHAR(_0_); PRINTPARAMCHAR(_SPC_); PRINTPARAMCHAR(_SPC_); PRINTPARAMCHAR(_SPC_);
+					HORIZONTALTAB; PRINTFLOAT3(SLAB_F90(BSDF));
+					NEXTLINE;
+				}
+
+				HORIZONTALTAB; PRINTPARAMCHAR(_R_); PRINTPARAMCHAR(_O_); PRINTPARAMCHAR(_U_); PRINTPARAMCHAR(_G_); PRINTPARAMCHAR(_H_); PRINTPARAMCHAR(_SPC_);
+				HORIZONTALTAB; PRINTFLOAT1(SLAB_ROUGHNESS(BSDF));
+				NEXTLINE;
+
+				if (BSDF_GETHASANISOTROPY(BSDF))
+				{				
+					HORIZONTALTAB; PRINTPARAMCHAR(_A_); PRINTPARAMCHAR(_N_); PRINTPARAMCHAR(_I_); PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_O_); PRINTPARAMCHAR(_SPC_);
+					HORIZONTALTAB; PRINTFLOAT1(SLAB_ANISOTROPY(BSDF));
+					NEXTLINE;
+				}
+
+				if (BSDF_GETHASHAZINESS(BSDF))
+				{
+					HORIZONTALTAB; PRINTPARAMCHAR(_H_); PRINTPARAMCHAR(_A_); PRINTPARAMCHAR(_Z_); PRINTPARAMCHAR(_I_); PRINTPARAMCHAR(_N_); PRINTPARAMCHAR(_SPC_);
+					HORIZONTALTAB; PRINTFLOAT1(SLAB_HAZINESS(BSDF));
+					NEXTLINE;
+				}
+
+				if (BSDF_GETHASSSS(BSDF) || BSDF_GETISSIMPLEVOLUME(BSDF) || BSDF_GETISTHIN(BSDF))
+				{
+					if (BSDF_GETHASSSSPROFILE(BSDF) && BSDF_GETISSIMPLEVOLUME(BSDF)==0)
+					{
+						HORIZONTALTAB; PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_SPC_); PRINTPARAMCHAR(_I_); PRINTPARAMCHAR(_D_); PRINTPARAMCHAR(_SPC_);
+						HORIZONTALTAB; PRINTFLOATNOFRAC(floor(SLAB_SSSPROFILEID(BSDF)*255.0f+0.5f),3);
+						NEXTLINE;
+						HORIZONTALTAB; PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_C_); PRINTPARAMCHAR(_L_); PRINTPARAMCHAR(_SPC_);
+						HORIZONTALTAB; PRINTFLOAT1(SLAB_SSSPROFILERADIUSSCALE(BSDF));
+						NEXTLINE;
+					}
+					else
+					{
+						HORIZONTALTAB; PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_D_); PRINTPARAMCHAR(_M_); PRINTPARAMCHAR(_F_); PRINTPARAMCHAR(_P_);
+						HORIZONTALTAB; PRINTFLOAT3(SLAB_SSSDMFP(BSDF));
+						NEXTLINE;
+					}
+				}
+
+				if (BSDF_GETHASTHINFILM(BSDF))
+				{
+					HORIZONTALTAB; PRINTPARAMCHAR(_T_); PRINTPARAMCHAR(_F_); PRINTPARAMCHAR(_SPC_); PRINTPARAMCHAR(_I_); PRINTPARAMCHAR(_O_); PRINTPARAMCHAR(_R_); PRINTPARAMCHAR(_SPC_);
+					HORIZONTALTAB; PRINTFLOAT1(SLAB_THINFILM_IOR(BSDF));
+					NEXTLINE;
+					HORIZONTALTAB; PRINTPARAMCHAR(_T_); PRINTPARAMCHAR(_F_); PRINTPARAMCHAR(_SPC_); PRINTPARAMCHAR(_T_); PRINTPARAMCHAR(_C_); PRINTPARAMCHAR(_K_); PRINTPARAMCHAR(_SPC_);
+					HORIZONTALTAB; PRINTFLOAT1(SLAB_THINFILM_THICKNESS(BSDF));
+					NEXTLINE;
+				}
+
+				if (BSDF_GETHASFUZZ(BSDF))
+				{
+					HORIZONTALTAB; PRINTPARAMCHAR(_F_); PRINTPARAMCHAR(_U_); PRINTPARAMCHAR(_Z_); PRINTPARAMCHAR(_Z_); PRINTPARAMCHAR(_SPC_); PRINTPARAMCHAR(_SPC_); PRINTPARAMCHAR(_SPC_);
+					HORIZONTALTAB; PRINTFLOAT1(SLAB_FUZZ_AMOUNT(BSDF));
+					NEXTLINE;
+					HORIZONTALTAB; PRINTPARAMCHAR(_F_); PRINTPARAMCHAR(_U_); PRINTPARAMCHAR(_Z_); PRINTPARAMCHAR(_C_); PRINTPARAMCHAR(_O_); PRINTPARAMCHAR(_L_); PRINTPARAMCHAR(_SPC_);
+					HORIZONTALTAB; PRINTFLOAT3(SLAB_FUZZ_COLOR(BSDF));
+					NEXTLINE;
+				}
+#else
+				NEXTLINE;
+				NEXTLINE;
+				NEXTLINE;
+				if (BSDF_GETHASF90(BSDF))
+				{
+					NEXTLINE;
+				}
+				if (BSDF_GETHASANISOTROPY(BSDF))
+				{
+					NEXTLINE;
+					NEXTLINE;
+				}
+				else
+				{
+					NEXTLINE;
+				}
+
+				if (BSDF_GETHASHAZINESS(BSDF))
+				{
+					NEXTLINE;
+				}
+
+				if (BSDF_GETHASSSS(BSDF) || BSDF_GETISSIMPLEVOLUME(BSDF) || BSDF_GETISTHIN(BSDF))
+				{
+					if (BSDF_GETHASSSSPROFILE(BSDF) && BSDF_GETISSIMPLEVOLUME(BSDF) == 0)
+					{
+						NEXTLINE;
+						NEXTLINE;
+					}
+					else
+					{
+						NEXTLINE;
+					}
+				}
+
+				if (BSDF_GETHASTHINFILM(BSDF))
+				{
+					NEXTLINE;
+					NEXTLINE;
+				}
+
+				if (BSDF_GETHASFUZZ(BSDF))
+				{
+					NEXTLINE;
+					NEXTLINE;
+				}
+#endif
+				break;
+
+			case STRATA_BSDF_TYPE_HAIR:
+#if PERMUTATION_BSDF_PASS==1
+				PRINTBSDFCHAR(_H_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_I_); PRINTBSDFCHAR(_R_); PRINTBSDFCHAR(_SPC_);
+				PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_SPC_);
+				if (BSDF_GETHASGREYWEIGHT(BSDF))
+				{
+					PRINTBSDFGREYWEIGHT();
+				}
+				else
+				{
+					PRINTBSDFWEIGHT();
+				}
+				PRINTBSDFSHAREDLOCALBASISID();
+				PRINTBSDFANISO();
+				PRINTBSDFTOPLAY();
+				NEXTLINE;
+
+				HORIZONTALTAB; PRINTPARAMCHAR(_A_); PRINTPARAMCHAR(_L_); PRINTPARAMCHAR(_B_); PRINTPARAMCHAR(_E_); PRINTPARAMCHAR(_D_); PRINTPARAMCHAR(_O_);
+				HORIZONTALTAB; PRINTFLOAT3(HAIR_BASECOLOR(BSDF));
+				NEXTLINE;
+				HORIZONTALTAB; PRINTPARAMCHAR(_R_); PRINTPARAMCHAR(_O_); PRINTPARAMCHAR(_U_); PRINTPARAMCHAR(_G_); PRINTPARAMCHAR(_H_); PRINTPARAMCHAR(_SPC_);
+				HORIZONTALTAB; PRINTFLOAT1(HAIR_ROUGHNESS(BSDF));
+				NEXTLINE;
+				HORIZONTALTAB; PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_C_); PRINTPARAMCHAR(_A_); PRINTPARAMCHAR(_T_); PRINTPARAMCHAR(_T_); PRINTPARAMCHAR(_SPC_);
+				HORIZONTALTAB; PRINTFLOAT1(HAIR_SCATTER(BSDF));
+				NEXTLINE;
+				HORIZONTALTAB; PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_P_); PRINTPARAMCHAR(_E_); PRINTPARAMCHAR(_C_); PRINTPARAMCHAR(_U_); PRINTPARAMCHAR(_SPC_);
+				HORIZONTALTAB; PRINTFLOAT1(HAIR_SPECULAR(BSDF));
+				NEXTLINE;
+				HORIZONTALTAB; PRINTPARAMCHAR(_B_); PRINTPARAMCHAR(_A_); PRINTPARAMCHAR(_C_); PRINTPARAMCHAR(_K_); PRINTPARAMCHAR(_L_); PRINTPARAMCHAR(_SPC_);
+				HORIZONTALTAB; PRINTFLOAT1(HAIR_BACKLIT(BSDF));
+				NEXTLINE;
+				HORIZONTALTAB; PRINTPARAMCHAR(_T_); PRINTPARAMCHAR(_R_); PRINTPARAMCHAR(_A_); PRINTPARAMCHAR(_N_); PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_SPC_);
+				HORIZONTALTAB; PRINTFLOAT1(HAIR_COMPLEXTRANSMITTANCE(BSDF));
+				NEXTLINE;
+#else
+				NEXTLINE;
+				NEXTLINE;
+				NEXTLINE;
+				NEXTLINE;
+				NEXTLINE;
+				NEXTLINE;
+#endif
+				break;
+
+			case STRATA_BSDF_TYPE_SINGLELAYERWATER:
+#if PERMUTATION_BSDF_PASS==2
+				PRINTBSDFCHAR(_W_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_T_); PRINTBSDFCHAR(_E_); PRINTBSDFCHAR(_R_);
+				PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_SPC_); PRINTBSDFCHAR(_SPC_);
+				PRINTBSDFCHAR(_T_); PRINTBSDFCHAR(_O_); PRINTBSDFCHAR(_D_); PRINTBSDFCHAR(_O_); PRINTBSDFCHAR(_SPC_);
+
+				HORIZONTALTAB; PRINTPARAMCHAR(_A_); PRINTPARAMCHAR(_L_); PRINTPARAMCHAR(_B_); PRINTPARAMCHAR(_E_); PRINTPARAMCHAR(_D_); PRINTPARAMCHAR(_O_);
+				HORIZONTALTAB; PRINTFLOAT3(SLW_BASECOLOR(BSDF));
+				NEXTLINE;
+				HORIZONTALTAB; PRINTPARAMCHAR(_M_); PRINTPARAMCHAR(_E_); PRINTPARAMCHAR(_T_); PRINTPARAMCHAR(_A_); PRINTPARAMCHAR(_L_); PRINTPARAMCHAR(_O_);
+				HORIZONTALTAB; PRINTFLOAT1(SLW_METALLIC(BSDF));
+				NEXTLINE;
+				HORIZONTALTAB; PRINTPARAMCHAR(_S_); PRINTPARAMCHAR(_P_); PRINTPARAMCHAR(_E_); PRINTPARAMCHAR(_C_); PRINTPARAMCHAR(_U_); PRINTPARAMCHAR(_SPC_);
+				HORIZONTALTAB; PRINTFLOAT1(SLW_SPECULAR(BSDF));
+				NEXTLINE;
+				HORIZONTALTAB; PRINTPARAMCHAR(_R_); PRINTPARAMCHAR(_O_); PRINTPARAMCHAR(_U_); PRINTPARAMCHAR(_G_); PRINTPARAMCHAR(_H_); PRINTPARAMCHAR(_SPC_);
+				HORIZONTALTAB; PRINTFLOAT1(SLW_ROUGHNESS(BSDF));
+				NEXTLINE;
+				HORIZONTALTAB; PRINTPARAMCHAR(_O_); PRINTPARAMCHAR(_P_); PRINTPARAMCHAR(_A_); PRINTPARAMCHAR(_C_); PRINTPARAMCHAR(_I_); PRINTPARAMCHAR(_T_);
+				HORIZONTALTAB; PRINTFLOAT1(SLW_TOPMATERIALOPACITY(BSDF));
+				NEXTLINE;
+#else
+				NEXTLINE;
+				NEXTLINE;
+				NEXTLINE;
+				NEXTLINE;
+				NEXTLINE;
+#endif
+				break;
+			}
+
+			HORIZONTALSEPARATION;
+		}
+
+		const uint PixelStrataDataByteOffsetPostBSDF = StrataAddressing.ReadBytes;
+
+#if PERMUTATION_BSDF_PASS==0
+		PRINTINFOCHAR(_B_); PRINTINFOCHAR(_O_); PRINTINFOCHAR(_T_); PRINTINFOCHAR(_T_); PRINTINFOCHAR(_O_); PRINTINFOCHAR(_M_);
+		NEXTLINE;
+		HORIZONTALSEPARATION;
+
+
+		PRINTBSDFCHAR(_H_); PRINTBSDFCHAR(_E_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_D_); PRINTBSDFCHAR(_E_); PRINTBSDFCHAR(_R_);
+		PRINTBSDFCHAR(_B_); PRINTBSDFCHAR(_Y_); PRINTBSDFCHAR(_T_); PRINTBSDFCHAR(_E_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_SPC_);
+		PRINTFLOATNOFRAC(float(PixelStrataDataByteOffsetPostHeader - PixelStrataDataByteOffsetStart), 3);
+		NEXTLINE;
+
+		PRINTBSDFCHAR(_B_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_D_); PRINTBSDFCHAR(_F_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_SPC_);
+		PRINTBSDFCHAR(_B_); PRINTBSDFCHAR(_Y_); PRINTBSDFCHAR(_T_); PRINTBSDFCHAR(_E_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_SPC_);
+		PRINTFLOATNOFRAC(float(PixelStrataDataByteOffsetPostBSDF - PixelStrataDataByteOffsetPostHeader), 3);
+		NEXTLINE;
+
+		PRINTBSDFCHAR(_T_); PRINTBSDFCHAR(_O_); PRINTBSDFCHAR(_T_); PRINTBSDFCHAR(_A_); PRINTBSDFCHAR(_L_); PRINTBSDFCHAR(_SPC_);
+		PRINTBSDFCHAR(_B_); PRINTBSDFCHAR(_Y_); PRINTBSDFCHAR(_T_); PRINTBSDFCHAR(_E_); PRINTBSDFCHAR(_S_); PRINTBSDFCHAR(_SPC_);
+		PRINTFLOATNOFRAC(float(PixelStrataDataByteOffsetPostBSDF - PixelStrataDataByteOffsetStart), 3);
+		NEXTLINE;
+
+		// Background
+		if (all(PixelPos > RectMin) && all(PixelPos < RectMax) && !bPlotValid)
+		{
+			OutColor.w = 0.0f;				// Set background visiblity to 0 in the bottom right part of the screen to better reads the debug values
+		}
+#endif
+	}
+}
+
+

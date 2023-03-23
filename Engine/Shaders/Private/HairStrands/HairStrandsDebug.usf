@@ -1,0 +1,204 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../ColorMap.ush"
+#include "HairStrandsVisibilityCommon.ush"
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+#if SHADER_DEBUG_MODE
+
+float2 OutputResolution;
+uint FastResolveMask;
+uint DebugMode;
+int SampleIndex;
+
+Texture2D<uint2> DepthStencilTexture;
+SamplerState LinearSampler;
+
+#define DEBUG_MODE_SAMPLE_COUNT 0 
+#define DEBUG_MODE_COVERAGE_TYPE 1
+#define DEBUG_MODE_TAA_RESOLVE_TYPE 2
+#define DEBUG_MODE_COVERAGE 3
+#define DEBUG_MODE_DEPTH 4
+#define DEBUG_MODE_BASECOLOR 5
+#define DEBUG_MODE_ROUGHNESS 6
+#define DEBUG_MODE_SPECULAR 7
+#define DEBUG_MODE_TANGENT 8
+#define DEBUG_MODE_TILE 9
+
+void MainPS(
+	in FScreenVertexOutput Input,
+	out float4 OutColor : SV_Target0)
+{
+	const float2 UV = Input.UV;
+	const float2 PixelPos = UV * OutputResolution;
+
+	const float HairPixelCoverage = HairStrands.HairCoverageTexture.Load(uint3(PixelPos, 0));
+	const bool bIsValid = HairPixelCoverage > 0 || DebugMode == DEBUG_MODE_TILE;
+	if (!bIsValid)
+		discard;
+
+	const FNodeDesc NodeDesc = DecodeNodeDesc(HairStrands.HairSampleOffset.Load(uint3(PixelPos, 0)));
+
+	float3 Color = 0;
+	float Alpha = 1;
+	if (DebugMode == DEBUG_MODE_SAMPLE_COUNT)
+	{
+		Color = GetHSVDebugColor(NodeDesc.Count/float(HairStrands.MaxSamplePerPixelCount));
+	}
+
+	if (DebugMode == DEBUG_MODE_COVERAGE_TYPE)
+	{
+		const bool bIsFullyCovered = HairPixelCoverage >= 1;
+		Color = bIsFullyCovered ? float3(0.25,0.85,0.25) : float3(0.85,0.25,0.25);
+	}
+
+	if (DebugMode == DEBUG_MODE_TAA_RESOLVE_TYPE)
+	{
+		const uint Stencil = DepthStencilTexture.Load(uint3(PixelPos,0)).y;
+		const bool bIsFastResolve = (Stencil & FastResolveMask) != 0;
+		Color = bIsFastResolve ? float3(1,1,0) : float3(0.15f, 0.25f, 0.75f);
+	}
+
+	if (DebugMode == DEBUG_MODE_COVERAGE)
+	{
+		Color = GetHSVDebugColor(saturate(HairPixelCoverage));
+	}
+
+	const bool bIsDebugModeMaterial =
+		DebugMode == DEBUG_MODE_DEPTH ||
+		DebugMode == DEBUG_MODE_BASECOLOR ||
+		DebugMode == DEBUG_MODE_ROUGHNESS ||
+		DebugMode == DEBUG_MODE_SPECULAR || 
+		DebugMode == DEBUG_MODE_TANGENT;
+
+	if (NodeDesc.Count > 0 && bIsDebugModeMaterial)
+	{
+		const int LocalSampleIndex = SampleIndex; 
+		const bool bAverageAllSamples = LocalSampleIndex < 0;
+		const uint SelectedIndex = LocalSampleIndex >= 0 ? clamp(LocalSampleIndex, 0, NodeDesc.Count - 1) : 0;
+		float	Depth = 0;
+		float3	Tangent = 0;
+		float3	BaseColor = 0;
+		float	Roughness = 0;
+		float	Specular = 0;
+
+		for (uint NodeIt = 0; NodeIt < NodeDesc.Count; ++NodeIt)
+		{
+			const uint NodeOffset = NodeDesc.Offset + NodeIt;
+			const FPackedHairSample Data = HairStrands.HairSampleData[NodeOffset];
+			const FHairSample Sample = UnpackHairSample(Data);
+
+			if (bAverageAllSamples)
+			{
+				Depth		+= Sample.Depth;
+				Tangent		+= Sample.Tangent;
+				BaseColor	+= Sample.BaseColor;
+				Roughness	+= Sample.Roughness;
+				Specular	+= Sample.Specular;
+			}
+			else if (SelectedIndex == NodeIt)
+			{
+				Depth		= Sample.Depth;
+				Tangent		= Sample.Tangent;
+				BaseColor	= Sample.BaseColor;
+				Roughness	= Sample.Roughness;
+				Specular	= Sample.Specular;
+			}
+		}
+
+		if (bAverageAllSamples)
+		{
+			Depth		/= NodeDesc.Count;
+			Tangent		/= NodeDesc.Count;
+			BaseColor	/= NodeDesc.Count;
+			Roughness	/= NodeDesc.Count;
+			Specular	/= NodeDesc.Count;
+		}
+
+		if (DebugMode == DEBUG_MODE_DEPTH)
+		{
+			Color = Depth;
+		}
+
+		if (DebugMode == DEBUG_MODE_BASECOLOR)
+		{
+			Color = BaseColor;
+		}
+
+		if (DebugMode == DEBUG_MODE_ROUGHNESS)
+		{
+			Color = Roughness;
+		}
+
+		if (DebugMode == DEBUG_MODE_SPECULAR)
+		{
+			Color = Specular;
+		}
+
+		if (DebugMode == DEBUG_MODE_TANGENT)
+		{
+			Color = (Tangent+1) * 0.5f;
+		}
+	}
+
+	OutColor = float4(Color, Alpha);
+}
+
+#endif // SHADER_DEBUG_MODE
+
+/////////////////////////////////////////////////////////////////////////////////////////
+
+#if SHADER_CVS
+#include "HairStrandsVertexFactoryCommon.ush"
+
+float4x4 LocalToWorld;
+uint MaxVertexCount;
+
+SamplerState LinearSampler;
+Texture2D<float> DepthTexture;
+RWTexture2D<float4> ColorTexture;
+
+[numthreads(256, 1, 1)]
+void MainCS(uint3 DispatchThreadId : SV_DispatchThreadID)
+{
+	const uint VertexId = DispatchThreadId.x;
+	if (VertexId > MaxVertexCount)
+		return;
+
+	uint VertexIndex = VertexId;
+	float ScaleR = 1;
+	if (HairStrandsVF.CullingEnable)
+	{
+		ScaleR = HairStrandsVF.CulledVertexRadiusScaleBuffer[VertexIndex];
+		VertexIndex = HairStrandsVF.CulledVertexIdsBuffer[VertexIndex];
+	}
+
+	const float3 P_Local = UnpackHairControlPoint(
+		HairStrandsVF.PositionBuffer[VertexIndex],
+		HairStrandsVF.PositionOffsetBuffer[0].xyz,
+		HairStrandsVF.Radius * ScaleR,
+		HairStrandsVF.RootScale,
+		HairStrandsVF.TipScale).Position;
+
+	const float3 P_World = mul(float4(P_Local, 1), LocalToWorld).xyz;
+	float4 SamplePosition = float4(P_World + LWCHackToFloat(PrimaryView.PreViewTranslation), 1);
+	float4 ClipPosition = mul(SamplePosition, View.TranslatedWorldToClip);
+	float2 ScreenPosition = ClipPosition.xy / ClipPosition.w;
+	float2 ScreenUV = ScreenPosition * View.ScreenPositionScaleBias.xy + View.ScreenPositionScaleBias.wz;
+	float SampleSceneDepth = ClipPosition.w;
+
+	const float S = 1;
+	const float4 Color = float4(S, S, 0, 1);
+	const float SceneDepth = ConvertFromDeviceZ(DepthTexture.SampleLevel(LinearSampler, ScreenUV, 0));
+	const bool bIsVisible = SampleSceneDepth <= SceneDepth;
+	if (bIsVisible)
+	{
+		int2 OutCoord = ScreenUV * View.BufferSizeAndInvSize.xy;
+		OutCoord = clamp(OutCoord, int2(0, 0), View.BufferSizeAndInvSize.xy);
+		ColorTexture[OutCoord] = Color;
+	}
+}
+
+#endif // SHADER_CVS

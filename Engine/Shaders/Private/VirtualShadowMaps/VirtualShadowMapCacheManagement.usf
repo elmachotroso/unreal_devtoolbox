@@ -1,0 +1,211 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../SceneData.ush"
+#include "VirtualShadowMapProjectionCommon.ush"
+#include "VirtualShadowMapPageOverlap.ush"
+#include "VirtualShadowMapPageCacheCommon.ush"
+#include "../ScreenSpaceDenoise/SSDDefinitions.ush"		// For LIGHT_TYPE's
+
+//#include "NaniteDataDecode.ush"
+ #include "../Nanite/NaniteHZBCull.ush"
+
+#if ENABLE_DEBUG_MODE
+#include "../ShaderDrawDebug.ush"
+#include "../ColorMap.ush"
+#endif
+
+#if INPUT_KIND == INPUT_KIND_LOAD_BALANCER
+#include "../InstanceCulling/InstanceCullingLoadBalancer.ush"
+#endif //
+
+RWStructuredBuffer<uint> OutDynamicCasterPageFlags;
+uint InstanceSceneDataSOAStride;
+uint GPUSceneNumAllocatedInstances;
+uint GPUSceneNumAllocatedPrimitives;
+
+#if ENABLE_DEBUG_MODE
+uint bDrawBounds;
+#endif
+
+#if INPUT_KIND == INPUT_KIND_GPU_INSTANCES
+StructuredBuffer<uint> InvalidatingInstances;
+uint NumInvalidatingInstanceSlots;
+#endif
+
+/**
+ * Each thread loops over a range on instances loaded from a buffer. The instance bounds are projected to all cached virtual shadow map address space 
+ * and any overlapped pages are marked as invalid.
+ */
+[numthreads(CS_1D_GROUP_SIZE_X, 1, 1)]
+void VirtualSmInvalidateInstancePagesCS(
+	uint DispatchIndex : SV_DispatchThreadID,
+	uint3 GroupId : SV_GroupID,
+	uint GroupThreadIndex : SV_GroupIndex)
+{
+	uint FirstVirtualShadowMapId = 0u;
+	uint NumVirtualShadowMapIds = VirtualShadowMap.NumShadowMaps;
+
+#if INPUT_KIND == INPUT_KIND_LOAD_BALANCER
+	FInstanceWorkSetup WorkSetup = InstanceCullingLoadBalancer_Setup(GroupId, GroupThreadIndex, 0U);
+
+	if (!WorkSetup.bValid)
+	{
+		return;
+	}
+
+	bool bSkipClipmaps = (WorkSetup.Item.Payload & 1U) != 0U;
+	uint SingleShadowMapId = WorkSetup.Item.Payload >> 1U;
+	if (SingleShadowMapId != 0U)
+	{
+		FirstVirtualShadowMapId = SingleShadowMapId - 1U;
+		NumVirtualShadowMapIds = FirstVirtualShadowMapId + 1U;
+	}
+
+	uint InstanceId = WorkSetup.Item.InstanceDataOffset + uint(WorkSetup.LocalItemIndex);
+#else // INPUT_KIND == INPUT_KIND_GPU_INSTANCES
+	// The 0th index stores the total number appended
+	if (DispatchIndex >= InvalidatingInstances[0])
+	{
+		return;
+	}
+	bool bSkipClipmaps = false;
+
+	int InstanceId = InvalidatingInstances[1 + DispatchIndex];
+#endif
+	{
+		checkSlow(InstanceId >= 0 && InstanceId < InstanceSceneDataSOAStride);
+		checkSlow(InstanceId >= 0 && InstanceId < GPUSceneNumAllocatedInstances);
+
+		FInstanceSceneData InstanceSceneData = GetInstanceSceneData(InstanceId, InstanceSceneDataSOAStride);
+
+		if (!InstanceSceneData.ValidInstance)
+		{
+			return;
+		}
+
+		uint InvalidationFlags = ShouldCacheInstanceAsStatic(InstanceSceneData) ? VSM_STATIC_UNCACHED_FLAG : VSM_DYNAMIC_UNCACHED_FLAG;
+
+		// TODO: Clean up hardcoded flag field test.
+		bool bCastShadows = InstanceSceneData.ValidInstance 
+			&& (GetPrimitiveData(InstanceSceneData.PrimitiveId).Flags & 1U) != 0U;
+#if ENABLE_DEBUG_MODE
+		uint PageInvalidationCount = 0U;
+#endif
+
+		// TODO: test the flag on the instance instead once it is updated correctly InstanceSceneData.CastShadows
+		if (bCastShadows)
+		{
+			for (uint VirtualShadowMapId = FirstVirtualShadowMapId; VirtualShadowMapId < NumVirtualShadowMapIds;)
+			{
+				// 1. Load cached projection data
+				FVirtualShadowMapProjectionShaderData ProjectionData = GetVirtualShadowMapProjectionData(VirtualShadowMapId);
+				const bool bDirectionalLight = (ProjectionData.LightType == LIGHT_TYPE_DIRECTIONAL);
+
+				if (bSkipClipmaps && bDirectionalLight)
+				{
+					VirtualShadowMapId += uint(ProjectionData.ClipmapLevelCount);
+					continue;
+				}
+				else
+				{
+					++VirtualShadowMapId;
+				}
+				
+				// NOTE: This is the *shadow view*'s translated world, not primary view
+				float4x4 LocalToTranslatedWorld = LWCMultiplyTranslation(InstanceSceneData.LocalToWorld, ProjectionData.PreViewTranslation);
+				
+				// Go back to clip space
+				float4x4 UVToClip;
+				UVToClip[0] = float4(2, 0, 0, 0);
+				UVToClip[1] = float4(0, -2, 0, 0);
+				UVToClip[2] = float4(0, 0, 1, 0);
+				UVToClip[3] = float4(-1, 1, 0, 1);
+
+				float4x4 LocalToClip = mul(LocalToTranslatedWorld, mul(ProjectionData.TranslatedWorldToShadowUVMatrix, UVToClip));
+
+				FFrustumCullData Cull = BoxCullFrustum(InstanceSceneData.LocalBoundsCenter, InstanceSceneData.LocalBoundsExtent, LocalToClip, !bDirectionalLight, false);
+
+				if (Cull.bIsVisible)
+				{
+					// 2. figure out overlap and all that
+					// case #1 mip-map VSM - loop all mip levels, case #2 clipmap, just one 'mip level'
+					int NumMipLevels = (ProjectionData.ClipmapLevelCount <= 0) ? VSM_MAX_MIP_LEVELS : 1;
+					{
+						for (int MipLevel = 0; MipLevel < NumMipLevels; ++MipLevel)
+						{
+							int ViewDim = int(uint(VSM_VIRTUAL_MAX_RESOLUTION_XY) >> MipLevel);
+							FScreenRect Rect = GetScreenRect(int4(0, 0, ViewDim, ViewDim), Cull, 4);
+
+							// Add a small epsilon to the HZB depth test
+							// This is to handle the rare case where an object that is fully parallel to the 
+							// light's near plane might self-occlude the HZB test due to minor precision differences
+							// in the computation. While rare, this can come up with things like point lights and
+							// axis aligned boxes.
+							Rect.Depth += 1e-8f;
+
+							// Use Hierarchical mip test to speed up (allows skipping invalidating areas that don't have any flags anyway)
+							if (OverlapsAnyValidPage(ProjectionData.VirtualShadowMapId, MipLevel, float2(0.0f, 0.0f), Rect, VSM_ALLOCATED_FLAG))
+							{
+								uint4 RectPages = uint4(Rect.Pixels) >> VSM_LOG2_PAGE_SIZE;
+
+#if USE_HZB_OCCLUSION
+								FPageTestScreenRect HZBTestRect = SetupPageHZBRect(Rect);
+#endif // USE_HZB_OCCLUSION
+
+								// Clip to actually allocated pages
+								// TODO: move this to be done as part of or before the overlap test?
+								uint4 AllocatedBounds = VirtualShadowMap.PageRectBounds[ProjectionData.VirtualShadowMapId * VSM_MAX_MIP_LEVELS + MipLevel];
+								RectPages.xy = max(RectPages.xy, AllocatedBounds.xy);
+								RectPages.zw = min(RectPages.zw, AllocatedBounds.zw);
+								if (all(RectPages.zw >= RectPages.xy))
+								{
+									// 3. do invalidation
+									uint PageTableLevelOffset = CalcPageTableLevelOffset(ProjectionData.VirtualShadowMapId, MipLevel);
+									for (uint y = RectPages.y; y <= RectPages.w; y++)
+									{
+										for (uint x = RectPages.x; x <= RectPages.z; x++)
+										{
+											uint PageFlagOffset = PageTableLevelOffset + CalcPageOffsetInLevel(MipLevel, uint2(x, y));
+											uint PageFlag = VirtualShadowMap.PageFlags[PageFlagOffset];
+
+											if ((PageFlag & VSM_ALLOCATED_FLAG) != 0)
+											{
+#if USE_HZB_OCCLUSION
+												// When separate static caching is enabled we check against the static page
+												// rather than the dynamic one. This is not totally ideal for a number of reasons
+												// but it is generally better than checking against the dynamic one in most scenes.
+												// Ideally in fully cached cases we would check the cached/merged (dynamic) page at
+												// the very least.
+												const bool bSampleStaticPage = true;
+												if (!IsPageVisibleHZB(uint2(x, y), PageFlagOffset, HZBTestRect, bSampleStaticPage))
+												{
+													continue;
+												}
+#endif // USE_HZB_OCCLUSION
+												// Accumulate static/dynamic invalidation flags
+												// TODO: Wave version
+												InterlockedOr(OutDynamicCasterPageFlags[PageFlagOffset], InvalidationFlags);
+#if ENABLE_DEBUG_MODE
+												++PageInvalidationCount;
+#endif
+
+											}
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+#if ENABLE_DEBUG_MODE
+		if (bDrawBounds && PageInvalidationCount > 0U)
+		{
+			float3 Color = float3(0.3f, 0.3f, 0.3f) + ColorMapTurbo(min(1.0f, float(PageInvalidationCount) / 100.0f)) * 0.7f;
+			AddOBBWS(InstanceSceneData.LocalBoundsCenter - InstanceSceneData.LocalBoundsExtent, InstanceSceneData.LocalBoundsCenter + InstanceSceneData.LocalBoundsExtent, float4(Color, 1.0f), LWCHackToFloat(InstanceSceneData.LocalToWorld));
+		}
+#endif
+	}
+}

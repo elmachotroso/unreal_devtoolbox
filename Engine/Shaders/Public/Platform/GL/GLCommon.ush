@@ -1,0 +1,12 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	GLCommon.ush: Common GL shader code
+=============================================================================*/
+
+// Update this GUID to improve shader recompilation for GL only shaders
+// GUID = 73679724-6A97-4DE7-9727-4BEEF8C30BA3
+
+#pragma once
+
+

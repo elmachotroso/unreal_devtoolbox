@@ -1,0 +1,22 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "/Plugin/ComputeFramework/Private/ComputeKernelCommon.ush"
+
+float DI_LOCAL(GameTime);
+float DI_LOCAL(GameTimeDelta);
+uint DI_LOCAL(FrameNumber);
+
+DI_IMPL_READ(ReadGameTime, float, )
+{
+	return DI_LOCAL(GameTime);
+}
+
+DI_IMPL_READ(ReadGameTimeDelta, float, )
+{
+	return DI_LOCAL(GameTimeDelta);
+}
+
+DI_IMPL_READ(ReadFrameNumber, uint, )
+{
+	return DI_LOCAL(FrameNumber);
+}

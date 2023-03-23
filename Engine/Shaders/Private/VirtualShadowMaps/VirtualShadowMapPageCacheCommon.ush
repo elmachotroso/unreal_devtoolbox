@@ -1,0 +1,20 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+VirtualShadowMapPageCacheCommon.ush:
+=============================================================================*/
+#pragma once
+
+struct FShadowMapCacheData
+{
+	// ID of the corresponding virtual shadow map from the previous frame, or INDEX_NONE if
+	// there wasn't one.
+	int PrevVirtualShadowMapId;
+};
+
+StructuredBuffer<FShadowMapCacheData> ShadowMapCacheData;
+StructuredBuffer<uint> PrevPageFlags;
+StructuredBuffer<uint> PrevPageTable;
+StructuredBuffer<FPhysicalPageMetaData> PrevPhysicalPageMetaData;
+StructuredBuffer<uint> PrevDynamicCasterPageFlags;
+ByteAddressBuffer PrevProjectionData;

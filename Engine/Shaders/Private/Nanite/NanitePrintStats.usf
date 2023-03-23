@@ -1,0 +1,275 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+
+#if SHADER_PRINT_STATS
+#include "../ShaderPrintCommon.ush"
+#endif
+
+#include "NaniteCulling.ush"
+
+#ifndef VIRTUAL_TEXTURE_TARGET
+#define VIRTUAL_TEXTURE_TARGET 0
+#endif
+
+uint PackedClusterSize;
+
+StructuredBuffer<FQueueState>		QueueState;
+Buffer<uint>						MainPassRasterizeArgsSWHW;
+Buffer<uint>						PostPassRasterizeArgsSWHW;
+
+StructuredBuffer<FStats>			InStatsBuffer;
+RWStructuredBuffer<FStats>			OutStatsBuffer;
+
+RWBuffer<uint>						OutClusterStatsArgs;
+
+#if SHADER_PRINT_STATS
+
+float2 ShaderPrintLeftAlign(float2 ScreenPos, uint Value)
+{
+	int Len = 9;
+	
+	uint Tmp = Value;
+	while (Tmp >= 10)
+	{
+		Tmp /= 10;
+		Len--;
+	}
+
+	while (Len > 0)
+	{
+		ScreenPos = ShaderPrintSymbol(ScreenPos, _SPC_);
+		Len--;
+	}
+		
+
+	return ShaderPrint(ScreenPos, Value);
+}
+
+[numthreads(1, 1, 1)]
+void PrintStats()
+{
+	const uint HWClusterCounterIndex = GetHWClusterCounterIndex(RenderFlags);
+
+	const float TopMargin = 0.05f;
+	const float HeadlineX = 0.77f;
+	const float ItemX = 0.78f;
+
+	float2 ScreenPos = float2(HeadlineX, TopMargin);
+
+#if PRINT_PASS == 0
+	// Main Pass
+	ScreenPos.x = HeadlineX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("Main"), FontOrange);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	if (InStatsBuffer[0].NumPrimaryViews > 0)
+	{
+		ScreenPos.x = ItemX;
+		ScreenPos = ShaderPrintText(ScreenPos, TEXT("Pri Views "), FontYellow);
+		ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumPrimaryViews);
+		ScreenPos = ShaderPrintNewline(ScreenPos);
+
+		ScreenPos.x = ItemX;
+		ScreenPos = ShaderPrintText(ScreenPos, TEXT("Views     "), FontYellow);
+		ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumTotalViews);
+		ScreenPos = ShaderPrintNewline(ScreenPos);
+	}
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("  Pre-Cull"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumMainInstancesPreCull);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT(" Post-Cull"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumMainInstancesPostCull);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("NodeVisits"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumMainVisitedNodes);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("Candidates"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumMainCandidateClusters);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("ClustersSW"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, MainPassRasterizeArgsSWHW[0]);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("ClustersHW"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, MainPassRasterizeArgsSWHW[HWClusterCounterIndex]);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+	
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("  Clusters"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, MainPassRasterizeArgsSWHW[0] + MainPassRasterizeArgsSWHW[HWClusterCounterIndex]);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+#else
+	ScreenPos.y += (InStatsBuffer[0].NumPrimaryViews > 0 ? 11 : 9) * ShaderPrintUniform.FontSize.w;
+#endif
+
+#if TWO_PASS_CULLING
+#if PRINT_PASS == 1
+	// Post Pass
+	ScreenPos.x = HeadlineX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("Post"), FontOrange);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("  Pre-Cull"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumPostInstancesPreCull);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT(" Post-Cull"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumPostInstancesPostCull);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("NodeVisits"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumPostVisitedNodes);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("Candidates"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumPostCandidateClusters);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("ClustersSW"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, PostPassRasterizeArgsSWHW[0]);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("ClustersHW"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, PostPassRasterizeArgsSWHW[HWClusterCounterIndex]);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("  Clusters"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, PostPassRasterizeArgsSWHW[0] + PostPassRasterizeArgsSWHW[HWClusterCounterIndex]);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+#else
+	ScreenPos.y += 9 * ShaderPrintUniform.FontSize.w;
+#endif
+#endif
+
+#if PRINT_PASS == 2
+	// Total
+	ScreenPos.x = HeadlineX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("Total"), FontOrange);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("  Clusters"), FontYellow);
+#if TWO_PASS_CULLING
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, MainPassRasterizeArgsSWHW[0] + MainPassRasterizeArgsSWHW[HWClusterCounterIndex] + PostPassRasterizeArgsSWHW[0] + PostPassRasterizeArgsSWHW[HWClusterCounterIndex]);
+#else
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, MainPassRasterizeArgsSWHW[0] + MainPassRasterizeArgsSWHW[HWClusterCounterIndex]);
+#endif
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("      Tris"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumTris);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("     Verts"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumVerts);
+	ScreenPos = ShaderPrintNewline(ScreenPos);
+
+	ScreenPos.x = ItemX;
+	ScreenPos = ShaderPrintText(ScreenPos, TEXT("LGE P-RECT"), FontYellow);
+	ScreenPos = ShaderPrintLeftAlign(ScreenPos, InStatsBuffer[0].NumLargePageRectClusters);
+#endif
+}
+
+#endif // SHADER_PRINT_STATS
+
+#if SHADER_CALCULATE_STATS
+
+[numthreads(1, 1, 1)]
+void CalculateStats()
+{
+	const uint HWClusterCounterIndex = GetHWClusterCounterIndex(RenderFlags);
+	uint NumClusters = MainPassRasterizeArgsSWHW[0] + MainPassRasterizeArgsSWHW[HWClusterCounterIndex];
+#if TWO_PASS_CULLING
+	NumClusters += PostPassRasterizeArgsSWHW[0] + PostPassRasterizeArgsSWHW[HWClusterCounterIndex];
+#endif
+	
+	OutClusterStatsArgs[0] = (NumClusters + 63) / 64;
+	OutClusterStatsArgs[1] = 1;
+	OutClusterStatsArgs[2] = 1;
+
+	// Other stuff that needs to happen only once
+	OutStatsBuffer[0].NumMainVisitedNodes		= QueueState[0].PassState[0].NodeWriteOffset;
+	OutStatsBuffer[0].NumMainCandidateClusters	= QueueState[0].PassState[0].ClusterWriteOffset;
+	OutStatsBuffer[0].NumPostVisitedNodes		= QueueState[0].PassState[1].NodeWriteOffset;
+	OutStatsBuffer[0].NumPostCandidateClusters	= QueueState[0].PassState[1].ClusterWriteOffset;
+}
+
+#endif // SHADER_CALCULATE_STATS
+
+#if SHADER_CALCULATE_CLUSTER_STATS
+
+groupshared uint GroupNumTris;
+groupshared uint GroupNumVerts;
+groupshared uint GroupIndexDataSize;
+groupshared uint GroupPositionDataSize;
+groupshared uint GroupAttribDataSize;
+
+[numthreads(64, 1, 1)]
+void CalculateClusterStats(
+	uint DispatchThreadIndex : SV_DispatchThreadID,
+	uint GroupIndex : SV_GroupIndex
+	)
+{
+	const uint HWClusterCounterIndex = GetHWClusterCounterIndex(RenderFlags);
+
+	if (GroupIndex == 0)
+	{
+		GroupNumTris = 0;
+		GroupNumVerts = 0;
+		GroupIndexDataSize = 0;
+		GroupPositionDataSize = 0;
+		GroupAttribDataSize = 0;
+	}
+	GroupMemoryBarrierWithGroupSync();
+
+	uint NumClustersSW = MainPassRasterizeArgsSWHW[0];
+	uint NumClustersHW = MainPassRasterizeArgsSWHW[HWClusterCounterIndex];
+
+#if TWO_PASS_CULLING
+	NumClustersSW += PostPassRasterizeArgsSWHW[0];
+	NumClustersHW += PostPassRasterizeArgsSWHW[HWClusterCounterIndex];
+#endif
+
+	if (DispatchThreadIndex < NumClustersSW + NumClustersHW)
+	{
+		FVisibleCluster VisCluster = GetVisibleCluster((DispatchThreadIndex < NumClustersSW) ? DispatchThreadIndex : ( (MaxVisibleClusters - 1) - (DispatchThreadIndex - NumClustersSW) ), VIRTUAL_TEXTURE_TARGET != 0);
+		
+		FCluster Cluster = GetCluster(VisCluster.PageIndex, VisCluster.ClusterIndex);
+
+		InterlockedAdd(GroupNumTris,  Cluster.NumTris);
+		InterlockedAdd(GroupNumVerts, Cluster.NumVerts);
+	}
+
+	GroupMemoryBarrierWithGroupSync();
+
+	if (GroupIndex == 0)
+	{
+		InterlockedAdd(OutStatsBuffer[0].NumTris,  GroupNumTris);
+		InterlockedAdd(OutStatsBuffer[0].NumVerts, GroupNumVerts);
+	}
+}
+
+#endif // SHADER_CALCULATE_CLUSTER_STATS

@@ -1,0 +1,225 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	LumenSceneDirectLighting.ush
+=============================================================================*/
+
+#pragma once
+
+#include "LumenSceneLighting.ush"
+
+// Must match ELumenLightType in LumenSceneDirectLighting.cpp
+#define LIGHT_TYPE_DIRECTIONAL 0
+#define LIGHT_TYPE_POINT 1
+#define LIGHT_TYPE_SPOT 2
+#define LIGHT_TYPE_RECT 3
+
+groupshared uint SharedShadowMask[4];
+
+RWStructuredBuffer<uint> RWShadowMaskTiles;
+StructuredBuffer<uint> ShadowMaskTiles;
+
+struct FShadowMaskRay
+{
+	float ShadowFactor;
+	bool bShadowFactorComplete;
+};
+
+void ReadSharedShadowMaskRay(uint2 CoordInCardTile, inout FShadowMaskRay ShadowMaskRay)
+{
+	uint BitOffset = 2 * (CoordInCardTile.x + CoordInCardTile.y * CARD_TILE_SIZE);
+
+	uint ShadowMask = SharedShadowMask[BitOffset / 32];
+	ShadowMask = (ShadowMask >> (BitOffset % 32)) & 0x3;
+
+	ShadowMaskRay.ShadowFactor = ShadowMask & 0x1 ? 0.0f : 1.0f;
+	ShadowMaskRay.bShadowFactorComplete = ShadowMask & 0x2 ? true : false;
+}
+
+void ReadShadowMaskRayRW(uint CardTileIndex, uint2 CoordInCardTile, inout FShadowMaskRay ShadowMaskRay)
+{
+	uint BitOffset = 2 * (CoordInCardTile.x + CoordInCardTile.y * CARD_TILE_SIZE);
+
+	uint ShadowMask = RWShadowMaskTiles[4 * CardTileIndex + BitOffset / 32];
+	ShadowMask = (ShadowMask >> (BitOffset % 32)) & 0x3;
+
+	ShadowMaskRay.ShadowFactor = ShadowMask & 0x1 ? 0.0f : 1.0f;
+	ShadowMaskRay.bShadowFactorComplete = ShadowMask & 0x2 ? true : false;
+}
+
+void ReadShadowMaskRay(uint CardTileIndex, uint2 CoordInCardTile, inout FShadowMaskRay ShadowMaskRay)
+{
+	uint BitOffset = 2 * (CoordInCardTile.x + CoordInCardTile.y * CARD_TILE_SIZE);
+
+	uint ShadowMask = ShadowMaskTiles[4 * CardTileIndex + BitOffset / 32];
+	ShadowMask = (ShadowMask >> (BitOffset % 32)) & 0x3;
+
+	ShadowMaskRay.ShadowFactor = ShadowMask & 0x1 ? 0.0f : 1.0f;
+	ShadowMaskRay.bShadowFactorComplete = ShadowMask & 0x2 ? true : false;
+}
+
+void WriteSharedShadowMaskRay(FShadowMaskRay Ray, uint2 CoordInCardTile)
+{
+	if (Ray.bShadowFactorComplete)
+	{
+		uint Mask = 0;
+		if (Ray.ShadowFactor <= 0.5f)
+		{
+			// Set first bit
+			Mask |= 0x1;
+		}
+		if (Ray.bShadowFactorComplete)
+		{
+			// Set second bit
+			Mask |= 0x2;
+		}
+
+		uint BitOffset = 2 * (CoordInCardTile.x + CoordInCardTile.y * CARD_TILE_SIZE);
+		InterlockedOr(SharedShadowMask[BitOffset / 32], Mask << (BitOffset % 32));
+	}
+}
+
+void WriteShadowMaskRay(FShadowMaskRay Ray, uint CardTileIndex, uint2 CoordInCardTile)
+{
+	if (Ray.bShadowFactorComplete)
+	{
+		uint Mask = 0;
+		if (Ray.ShadowFactor <= 0.5f)
+		{
+			// Set first bit
+			Mask |= 0x1;
+		}
+		if (Ray.bShadowFactorComplete)
+		{
+			// Set second bit
+			Mask |= 0x2;
+		}
+
+		uint BitOffset = 2 * (CoordInCardTile.x + CoordInCardTile.y * CARD_TILE_SIZE);
+		InterlockedOr(RWShadowMaskTiles[4 * CardTileIndex + BitOffset / 32], Mask << (BitOffset % 32));
+	}
+}
+
+FDeferredLightData LoadLightData(uint LightType)
+{
+	FDeferredLightData LightData = (FDeferredLightData)0;
+
+	LightData.TranslatedWorldPosition = DeferredLightUniforms.TranslatedWorldPosition;
+	LightData.InvRadius = DeferredLightUniforms.InvRadius;
+	LightData.Color = DeferredLightUniforms.Color;
+	LightData.FalloffExponent = DeferredLightUniforms.FalloffExponent;
+	LightData.Direction = DeferredLightUniforms.Direction;
+	LightData.Tangent = DeferredLightUniforms.Tangent;
+	LightData.SpotAngles = DeferredLightUniforms.SpotAngles;
+	LightData.SourceRadius = DeferredLightUniforms.SourceRadius;
+	LightData.SourceLength = DeferredLightUniforms.SourceLength;
+	LightData.SoftSourceRadius = DeferredLightUniforms.SoftSourceRadius;
+	LightData.SpecularScale = DeferredLightUniforms.SpecularScale;
+	LightData.ContactShadowLength = abs(DeferredLightUniforms.ContactShadowLength);
+	LightData.ContactShadowLengthInWS = DeferredLightUniforms.ContactShadowLength < 0.0f;
+	LightData.DistanceFadeMAD = DeferredLightUniforms.DistanceFadeMAD;
+	LightData.ShadowMapChannelMask = DeferredLightUniforms.ShadowMapChannelMask;
+	LightData.ShadowedBits = DeferredLightUniforms.ShadowedBits;
+	LightData.RectLightBarnCosAngle = DeferredLightUniforms.RectLightBarnCosAngle;
+	LightData.RectLightBarnLength = DeferredLightUniforms.RectLightBarnLength;
+
+	LightData.bInverseSquared = LightData.FalloffExponent == 0.0f;
+	LightData.bRadialLight = LightType != LIGHT_TYPE_DIRECTIONAL;
+	LightData.bSpotLight = LightType == LIGHT_TYPE_SPOT;
+	LightData.bRectLight = LightType == LIGHT_TYPE_RECT;
+
+	return LightData;
+}
+
+struct FLumenPackedLight
+{
+	float3 TranslatedWorldPosition;
+	float InvRadius;
+
+	float3 Color;
+	float FalloffExponent;
+
+	float3 Direction;
+	float SpecularScale;
+
+	float3 Tangent;
+	float SourceRadius;
+
+	float2 SpotAngles;
+	float SoftSourceRadius;
+	float SourceLength;
+
+	float RectLightBarnCosAngle;
+	float RectLightBarnLength;
+	uint LightType;
+	uint VirtualShadowMapId;
+
+	float4 InfluenceSphere;
+
+	float3 ProxyPosition;
+	float ProxyRadius;
+
+	float3 ProxyDirection;
+	float CosConeAngle;
+
+	float SinConeAngle;
+	float3 Padding;
+};
+
+struct FLumenLight
+{
+	FDeferredLightData DeferredLightData;
+
+	float4 InfluenceSphere;
+	float3 ProxyPosition;
+	float3 ProxyDirection;
+	float ProxyRadius;
+	float CosConeAngle;
+	float SinConeAngle;
+
+	uint VirtualShadowMapId;
+	uint Type;
+};
+
+StructuredBuffer<FLumenPackedLight> LumenPackedLights;
+
+FLumenLight LoadLumenLight(uint LightIndex)
+{
+	FLumenPackedLight PackedLight = LumenPackedLights[LightIndex];
+
+	FDeferredLightData DeferredLightData = (FDeferredLightData)0;
+	DeferredLightData.TranslatedWorldPosition = PackedLight.TranslatedWorldPosition;
+	DeferredLightData.InvRadius = PackedLight.InvRadius;
+	DeferredLightData.Color = PackedLight.Color;
+	DeferredLightData.FalloffExponent = PackedLight.FalloffExponent;
+	DeferredLightData.Direction = PackedLight.Direction;
+	DeferredLightData.Tangent = PackedLight.Tangent;
+	DeferredLightData.SpotAngles = PackedLight.SpotAngles;
+	DeferredLightData.SourceRadius = PackedLight.SourceRadius;
+	DeferredLightData.SourceLength = PackedLight.SourceLength;
+	DeferredLightData.SoftSourceRadius = PackedLight.SoftSourceRadius;
+	DeferredLightData.SpecularScale = PackedLight.SpecularScale;
+	DeferredLightData.ContactShadowLength = 0.0f;
+	DeferredLightData.ContactShadowLengthInWS = false;
+	DeferredLightData.DistanceFadeMAD = 0.0f;
+	DeferredLightData.ShadowMapChannelMask = 0.0f;
+	DeferredLightData.ShadowedBits = 0;
+	DeferredLightData.RectLightBarnCosAngle = PackedLight.RectLightBarnCosAngle;
+	DeferredLightData.RectLightBarnLength = PackedLight.RectLightBarnLength;
+	DeferredLightData.bInverseSquared = PackedLight.FalloffExponent == 0.0f;
+	DeferredLightData.bRadialLight = PackedLight.LightType != LIGHT_TYPE_DIRECTIONAL;
+	DeferredLightData.bSpotLight = PackedLight.LightType == LIGHT_TYPE_SPOT;
+	DeferredLightData.bRectLight = PackedLight.LightType == LIGHT_TYPE_RECT;
+
+	FLumenLight LumenLight = (FLumenLight)0;
+	LumenLight.DeferredLightData = DeferredLightData;
+	LumenLight.InfluenceSphere = PackedLight.InfluenceSphere;
+	LumenLight.ProxyPosition = PackedLight.ProxyPosition;
+	LumenLight.ProxyRadius = PackedLight.ProxyRadius;
+	LumenLight.ProxyDirection = PackedLight.ProxyDirection;
+	LumenLight.CosConeAngle = PackedLight.CosConeAngle;
+	LumenLight.SinConeAngle = PackedLight.SinConeAngle;
+	LumenLight.VirtualShadowMapId = PackedLight.VirtualShadowMapId;
+	LumenLight.Type = PackedLight.LightType;
+	return LumenLight;
+}

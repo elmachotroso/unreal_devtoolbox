@@ -1,0 +1,358 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+//------------------------------------------------------- ENUM VALUES
+
+#include "ScreenSpaceDenoise/SSDDefinitions.ush"
+
+
+//------------------------------------------------------- CONFIGS
+
+#if DIM_APPLY_DIFFUSE_INDIRECT == 1 // Denoised lighting buffer
+	#define CONFIG_SIGNAL_PROCESSING SIGNAL_PROCESSING_SSGI
+	#define COMPILE_SIGNAL_COLOR 1
+	#define MAX_SIGNAL_BATCH_SIZE 1
+	#define SIGNAL_ARRAY_SIZE 1
+
+	#define CONFIG_SIGNAL_INPUT_LAYOUT  SIGNAL_BUFFER_LAYOUT_SSGI_HISTORY_R11G11B10
+	#define CONFIG_INPUT_TEXTURE_COUNT 2
+
+#elif DIM_APPLY_DIFFUSE_INDIRECT == 2 // Probe hierarchy output
+	#define CONFIG_SIGNAL_PROCESSING SIGNAL_PROCESSING_DIFFUSE_PROBE_HIERARCHY
+	#define COMPILE_SIGNAL_COLOR_ARRAY 2
+	#define MAX_SIGNAL_BATCH_SIZE 2
+	#define SIGNAL_ARRAY_SIZE 2
+
+	#define CONFIG_SIGNAL_INPUT_LAYOUT  SIGNAL_BUFFER_LAYOUT_DIFFUSE_PROBE_HIERARCHY_HISTORY
+	#define CONFIG_INPUT_TEXTURE_COUNT 3
+
+#elif DIM_APPLY_DIFFUSE_INDIRECT == 3 // RTGI
+	#define CONFIG_SIGNAL_PROCESSING SIGNAL_PROCESSING_DIFFUSE_INDIRECT_AND_AO
+	#define COMPILE_SIGNAL_COLOR 1
+	#define MAX_SIGNAL_BATCH_SIZE 1
+	#define SIGNAL_ARRAY_SIZE 1
+
+	#define CONFIG_SIGNAL_INPUT_LAYOUT  SIGNAL_BUFFER_LAYOUT_DIFFUSE_INDIRECT_AND_AO_HISTORY
+	#define CONFIG_INPUT_TEXTURE_COUNT 2
+
+#elif DIM_APPLY_DIFFUSE_INDIRECT == 4 // Screen Probe Gather output
+	#define CONFIG_SIGNAL_PROCESSING SIGNAL_PROCESSING_SSGI
+	#define COMPILE_SIGNAL_COLOR_ARRAY 3
+	#define MAX_SIGNAL_BATCH_SIZE 1
+	#define SIGNAL_ARRAY_SIZE 1
+
+	#define CONFIG_SIGNAL_INPUT_LAYOUT  SIGNAL_BUFFER_LAYOUT_SSGI_HISTORY_R11G11B10
+	#define CONFIG_INPUT_TEXTURE_COUNT 3
+
+#else // !DIM_APPLY_DIFFUSE_INDIRECT
+	// NOP
+#endif // !DIM_APPLY_DIFFUSE_INDIRECT
+
+#define COMPILE_MOMENT1_ACCUMULATOR 1
+#define COMPILE_BOX_KERNEL 1
+
+
+//------------------------------------------------------- INCLUDES
+
+#include "Common.ush"
+#include "SceneTextureParameters.ush"
+#include "BRDF.ush"
+#include "ShadingModels.ush"
+#include "ClearCoatCommon.ush"
+#include "FastMath.ush"
+
+#if DIM_APPLY_DIFFUSE_INDIRECT
+
+#include "ScreenSpaceDenoise/SSDSignalFramework.ush"
+#include "ScreenSpaceDenoise/SSDSignalArray.ush"
+#include "ScreenSpaceDenoise/SSDSpatialKernel.ush"
+#include "Lumen/LumenScreenSpaceBentNormal.ush"
+
+#endif
+
+#include "HairStrands/HairStrandsCommon.ush"
+#include "HairStrands/HairStrandsDeepTransmittanceCommon.ush"
+#include "HairStrands/HairStrandsDeepTransmittanceDualScattering.ush"
+
+//------------------------------------------------------- PARAMETERS
+
+float AmbientOcclusionStaticFraction;
+float ApplyAOToDynamicDiffuseIndirect;
+uint bVisualizeDiffuseIndirect;
+
+Texture2D AmbientOcclusionTexture;
+SamplerState AmbientOcclusionSampler;
+
+
+Texture2D DiffuseIndirect_Textures_0;
+
+#if CONFIG_INPUT_TEXTURE_COUNT > 1
+Texture2D DiffuseIndirect_Textures_1;
+#else
+#define DiffuseIndirect_Textures_1 DiffuseIndirect_Textures_0
+#endif
+
+#if CONFIG_INPUT_TEXTURE_COUNT > 2
+Texture2D DiffuseIndirect_Textures_2;
+#else
+#define DiffuseIndirect_Textures_2 DiffuseIndirect_Textures_0
+#endif
+
+#if CONFIG_INPUT_TEXTURE_COUNT > 3
+Texture2D DiffuseIndirect_Textures_3;
+#else
+#define DiffuseIndirect_Textures_3 DiffuseIndirect_Textures_0
+#endif
+
+RWTexture2D<float4> PassDebugOutput;
+
+float MaxRoughnessToTrace;
+float InvRoughnessFadeLength;
+
+float3 CombineRoughSpecular(FGBufferData GBuffer, float NoV, float3 RayTracedReflections, float3 RoughReflections, float3 SpecularColor)
+{
+	float3 Lighting;
+	
+	if (GBuffer.ShadingModelID == SHADINGMODELID_CLEAR_COAT)
+	{
+		Lighting = ClearCoatLayerCombine(GBuffer, NoV, RayTracedReflections, RoughReflections, SpecularColor);
+	}
+	else
+	{
+		float FadeAlpha = saturate((MaxRoughnessToTrace - GBuffer.Roughness) * InvRoughnessFadeLength);
+
+		Lighting = RoughReflections * (1 - FadeAlpha);
+
+		// Must branch as RayTracedReflections can be uninitialized where not needed and contain NaN
+		if (FadeAlpha > 0.0f)
+		{
+			Lighting += RayTracedReflections * FadeAlpha;
+		}
+	
+		Lighting *= EnvBRDF(SpecularColor, GBuffer.Roughness, NoV);
+	}
+	return Lighting;
+}
+
+//------------------------------------------------------- ENTRY POINT
+
+void MainPS(
+	float4 SvPosition : SV_POSITION
+#if DIM_APPLY_DIFFUSE_INDIRECT
+	, out float4 OutAddColor      DUAL_SOURCE_BLENDING_SLOT(0) : SV_Target0
+	, out float4 OutMultiplyColor DUAL_SOURCE_BLENDING_SLOT(1) : SV_Target1
+#else
+	, out float4 OutMultiplyColor : SV_Target0
+#endif
+)
+{
+	float2 SceneBufferUV = SvPositionToBufferUV(SvPosition);
+	float2 ScreenPosition = SvPositionToScreenPosition(SvPosition).xy;
+
+	// Sample scene textures.
+	FGBufferData GBuffer = GetGBufferDataFromSceneTextures(SceneBufferUV);
+
+	// Sample the ambient occlusion that is dynamically generated every frame.
+	float DynamicAmbientOcclusion = AmbientOcclusionTexture.SampleLevel(AmbientOcclusionSampler, SceneBufferUV, 0).r;
+
+	// Compute the final ambient occlusion to be applied.
+	float AOMask = (GBuffer.ShadingModelID != SHADINGMODELID_UNLIT);
+	float FinalAmbientOcclusion = lerp(1.0f, GBuffer.GBufferAO * DynamicAmbientOcclusion, AOMask * AmbientOcclusionStaticFraction);
+
+	float3 TranslatedWorldPosition = mul(float4(ScreenPosition * GBuffer.Depth, GBuffer.Depth, 1), View.ScreenToTranslatedWorld).xyz;
+
+	float3 N = GBuffer.WorldNormal;
+	float3 V = normalize(View.TranslatedWorldCameraOrigin - TranslatedWorldPosition);
+	float NoV = saturate(dot(N, V));
+
+	// Apply diffuse indirect.
+	#if DIM_APPLY_DIFFUSE_INDIRECT
+	{
+		FDirectLighting IndirectLighting = (FDirectLighting)0;
+
+		if (GBuffer.ShadingModelID != SHADINGMODELID_UNLIT)
+		{
+			float3 DiffuseIndirectLighting = 0;
+			float3 RoughSpecularIndirectLighting = 0;
+			float3 SpecularIndirectLighting = 0;
+
+			#if DIM_APPLY_DIFFUSE_INDIRECT == 4
+				DiffuseIndirectLighting = DiffuseIndirect_Textures_0.SampleLevel(GlobalPointClampedSampler, SceneBufferUV, 0).rgb;
+				RoughSpecularIndirectLighting = DiffuseIndirect_Textures_1.SampleLevel(GlobalPointClampedSampler, SceneBufferUV, 0).rgb;
+				SpecularIndirectLighting = DiffuseIndirect_Textures_2.SampleLevel(GlobalPointClampedSampler, SceneBufferUV, 0).rgb;
+			#else
+			{
+				// Sample the output of the denoiser.
+				FSSDKernelConfig KernelConfig = CreateKernelConfig();
+				
+				#if DEBUG_OUTPUT
+				{
+					KernelConfig.DebugPixelPosition = uint2(SvPosition.xy);
+					KernelConfig.DebugEventCounter = 0;
+				}
+				#endif
+
+				// Compile time.
+				KernelConfig.bSampleKernelCenter = true;
+				KernelConfig.BufferLayout = CONFIG_SIGNAL_INPUT_LAYOUT;
+				KernelConfig.bUnroll = true;
+
+				#if DIM_UPSCALE_DIFFUSE_INDIRECT
+				{
+					KernelConfig.SampleSet = SAMPLE_SET_2X2_BILINEAR;
+					KernelConfig.BilateralDistanceComputation = SIGNAL_WORLD_FREQUENCY_REF_METADATA_ONLY;
+					KernelConfig.WorldBluringDistanceMultiplier = 16.0;
+				
+					KernelConfig.BilateralSettings[0] = BILATERAL_POSITION_BASED(3);
+				
+					// SGPRs
+					KernelConfig.BufferSizeAndInvSize = View.BufferSizeAndInvSize * float4(0.5, 0.5, 2.0, 2.0);
+					KernelConfig.BufferBilinearUVMinMax = View.BufferBilinearUVMinMax;
+				}
+				#else
+				{
+					KernelConfig.SampleSet = SAMPLE_SET_1X1;
+					KernelConfig.bNormalizeSample = true;
+				
+					// SGPRs
+					KernelConfig.BufferSizeAndInvSize = View.BufferSizeAndInvSize;
+					KernelConfig.BufferBilinearUVMinMax = View.BufferBilinearUVMinMax;
+				}
+				#endif
+
+				// VGPRs
+				KernelConfig.BufferUV = SceneBufferUV; 
+				{
+					KernelConfig.CompressedRefSceneMetadata = GBufferDataToCompressedSceneMetadata(GBuffer);
+					KernelConfig.RefBufferUV = SceneBufferUV;
+					KernelConfig.RefSceneMetadataLayout = METADATA_BUFFER_LAYOUT_DISABLED;
+				}
+				KernelConfig.HammersleySeed = Rand3DPCG16(int3(SvPosition.xy, View.StateFrameIndexMod8)).xy;
+				
+				FSSDSignalAccumulatorArray UncompressedAccumulators = CreateSignalAccumulatorArray();
+				FSSDCompressedSignalAccumulatorArray CompressedAccumulators = CompressAccumulatorArray(
+					UncompressedAccumulators, CONFIG_ACCUMULATOR_VGPR_COMPRESSION);
+
+				AccumulateKernel(
+					KernelConfig,
+					DiffuseIndirect_Textures_0,
+					DiffuseIndirect_Textures_1,
+					DiffuseIndirect_Textures_2,
+					DiffuseIndirect_Textures_3,
+					/* inout */ UncompressedAccumulators,
+					/* inout */ CompressedAccumulators);
+
+				//PassDebugOutput[uint2(SvPosition.xy)] = float4(UncompressedAccumulators.Array[0].Moment1.SampleCount, 0, 0, 0);
+
+				FSSDSignalSample Sample;
+				#if DIM_UPSCALE_DIFFUSE_INDIRECT
+					Sample = NormalizeToOneSample(UncompressedAccumulators.Array[0].Moment1);
+				#else
+					Sample = UncompressedAccumulators.Array[0].Moment1;
+				#endif
+				
+				#if DIM_APPLY_DIFFUSE_INDIRECT == 1 || DIM_APPLY_DIFFUSE_INDIRECT == 3
+				{
+					DiffuseIndirectLighting = Sample.SceneColor.rgb;
+				}
+				#elif DIM_APPLY_DIFFUSE_INDIRECT == 2
+				{
+					DiffuseIndirectLighting = UncompressedAccumulators.Array[0].Moment1.ColorArray[0];
+					SpecularIndirectLighting = UncompressedAccumulators.Array[0].Moment1.ColorArray[1];
+				}
+				#else
+					#error Unimplemented
+				#endif
+			}
+			#endif
+
+			float3 DiffuseColor = bVisualizeDiffuseIndirect ? float3(.18f, .18f, .18f) : GBuffer.DiffuseColor;
+			float3 SpecularColor = GBuffer.SpecularColor;
+
+			#if DIM_APPLY_DIFFUSE_INDIRECT == 4
+				RemapClearCoatDiffuseAndSpecularColor(GBuffer, NoV, DiffuseColor, SpecularColor);
+			#endif
+
+			#if DIM_APPLY_DIFFUSE_INDIRECT == 2
+				float DiffuseIndirectAO = 1;
+			#elif DIM_APPLY_DIFFUSE_INDIRECT == 4	// Lumen Screen Probe Gather
+
+				#if DIM_SCREEN_BENT_NORMAL
+					float3 BentNormal = ScreenBentNormal[(uint2)SvPosition.xy].xyz * 2 - 1;
+					float AO = length(BentNormal);
+					float3 DiffuseIndirectAO = DistantIlluminationRescale(GBuffer.BaseColor, AO);
+					float SpecularOcclusion = CalculateSpecularOcclusion(GBuffer, AO, V, BentNormal);
+				#else
+					float SpecularOcclusion = 1.0f;
+					float DiffuseIndirectAO = 1;
+				#endif
+
+			#else
+				float DiffuseIndirectAO = lerp(1, FinalAmbientOcclusion, ApplyAOToDynamicDiffuseIndirect);
+			#endif
+
+			if (GBuffer.ShadingModelID == SHADINGMODELID_HAIR)
+			{
+				IndirectLighting.Diffuse = 0;
+				IndirectLighting.Specular = 0;
+
+				// Evaluate the hair BSDF for a imaginary reflected direction, and uses it a measure of the directional albedo
+				const float3 L = normalize(V - N * dot(V, N));
+				FHairTransmittanceData TransmittanceData = EvaluateDualScattering(GBuffer, V, L.xyz);
+				float3 f_s = PI * HairShading(GBuffer, L, V, N, 1, TransmittanceData, 1, 0.2, uint2(0, 0));
+				IndirectLighting.Diffuse = DiffuseIndirectLighting * DiffuseIndirectAO * f_s;			
+			}
+			else
+			{
+				if (GBuffer.ShadingModelID == SHADINGMODELID_SUBSURFACE 
+					|| GBuffer.ShadingModelID == SHADINGMODELID_PREINTEGRATED_SKIN 
+					// We can't afford to gather light from both sides so just add the reflectiveness to diffuse
+					|| GBuffer.ShadingModelID == SHADINGMODELID_TWOSIDED_FOLIAGE)
+				{
+					float3 SubsurfaceColor = ExtractSubsurfaceColor(GBuffer);
+					// Add subsurface energy to diffuse
+					DiffuseColor += SubsurfaceColor;
+				}
+
+				if (GBuffer.ShadingModelID == SHADINGMODELID_CLOTH)
+				{
+					float3 ClothFuzz = ExtractSubsurfaceColor(GBuffer);
+					DiffuseColor += ClothFuzz * GBuffer.CustomData.a;
+				}
+
+				IndirectLighting.Diffuse = DiffuseIndirectLighting * DiffuseColor * DiffuseIndirectAO;
+				IndirectLighting.Transmission = 0;
+
+				#if DIM_APPLY_DIFFUSE_INDIRECT == 4
+					RoughSpecularIndirectLighting *= SpecularOcclusion;
+					IndirectLighting.Specular = CombineRoughSpecular(GBuffer, NoV, SpecularIndirectLighting, RoughSpecularIndirectLighting, SpecularColor);
+				#else
+					IndirectLighting.Specular = SpecularIndirectLighting * EnvBRDF(SpecularColor, GBuffer.Roughness, NoV);
+				#endif
+			}
+		}
+
+		const bool bNeedsSeparateSubsurfaceLightAccumulation = UseSubsurfaceProfile(GBuffer.ShadingModelID);
+
+		if (bNeedsSeparateSubsurfaceLightAccumulation &&
+			View.bSubsurfacePostprocessEnabled > 0 && View.bCheckerboardSubsurfaceProfileRendering > 0)
+		{
+			bool bChecker = CheckerFromSceneColorUV(SceneBufferUV);
+
+			// Adjust for checkerboard. only apply non-diffuse lighting (including emissive) 
+			// to the specular component, otherwise lighting is applied twice
+			IndirectLighting.Specular *= !bChecker;
+		}
+
+		FLightAccumulator LightAccumulator = (FLightAccumulator)0;
+		LightAccumulator_Add(
+			LightAccumulator,
+			IndirectLighting.Diffuse + IndirectLighting.Specular,
+			IndirectLighting.Diffuse,
+			1.0f,
+			bNeedsSeparateSubsurfaceLightAccumulation);
+		OutAddColor = LightAccumulator_GetResult(LightAccumulator);
+	}
+	#endif
+
+	OutMultiplyColor = FinalAmbientOcclusion;
+}

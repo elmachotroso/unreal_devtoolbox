@@ -1,0 +1,229 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "../Common.ush"
+#include "../Nanite/NaniteHZBCull.ush"
+#include "../SceneData.ush"
+#include "VirtualShadowMapPageAccessCommon.ush"
+
+StructuredBuffer<uint> ShadowHZBPageTable;
+
+// NOTE: HMipLevel = 0 means the regular page flags
+uint ShadowGetPageFlags(uint ShadowMapID, uint MipLevel, uint HMipLevel, uint2 PageAddress)
+{
+	uint MipToSample = MipLevel + HMipLevel;
+	uint HPageLevelOffset = CalcPageTableLevelOffset(ShadowMapID, MipToSample);
+	uint RawFlags = VirtualShadowMap.PageFlags[CalcPageOffset(ShadowMapID, MipToSample, PageAddress)];
+
+	// Extract the flags for the given HMip
+	uint HMipBitShift = VSM_PAGE_FLAGS_BITS_PER_HMIP * HMipLevel;
+	return (RawFlags >> HMipBitShift) & VSM_PAGE_FLAGS_BITS_MASK;
+}
+
+// Note: the pixel 'screen' rect in FScreenRect is calculated using only the viewport _size_ as HZB uses a zero-offset buffer.
+// However, the page table is with respect to the entire virtual SM so we need to offset here.
+// Returns true if *all* flags in FlagMask are set on at least one overlapped page (see GetPageFlagMaskForRendering below)
+bool OverlapsAnyValidPage( 
+	uint ShadowMapID, 
+	uint MipLevel, 
+	int2 ViewPortRectMin, 
+	FScreenRect Rect,
+	uint FlagMask = VSM_ALLOCATED_FLAG)
+{
+	uint4 RectPages = uint4( Rect.Pixels + ViewPortRectMin.xyxy ) >> VSM_LOG2_PAGE_SIZE;
+
+	uint HMipLevel = MipLevelForRect(RectPages, 2);
+
+	RectPages >>= HMipLevel;
+	for( uint y = RectPages.y; y <= RectPages.w; y++ )
+	{
+		for( uint x = RectPages.x; x <= RectPages.z; x++ )
+		{
+			uint PageFlags = ShadowGetPageFlags(ShadowMapID, MipLevel, HMipLevel, uint2(x, y));
+			if ((PageFlags & FlagMask) == FlagMask)
+			{
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+static const uint HZB_PAGE_SIZE = VSM_PAGE_SIZE / 2;
+
+bool IsVisibleHZB( uint ShadowMapID, uint MipLevel, FScreenRect Rect )
+{
+	// Don't have an HZB to test.
+	if( ShadowMapID == ~0u )
+		return true;
+
+	// Can't go past mip level of 4x4 for a 4x4 test without possibly covering more than 4 pages.
+	if( Rect.HZBLevel > VSM_LOG2_PAGE_SIZE - 3 )
+	{
+#if 1
+		return true;
+#else
+		Rect.HZBLevel = VSM_LOG2_PAGE_SIZE - 3;
+		Rect.HZBTexels = int4( Rect.Pixels.xy, max( Rect.Pixels.xy, Rect.Pixels.zw ) );	
+		Rect.HZBTexels >>= Rect.HZBLevel + 1;
+#endif
+	}
+
+	uint PageTableLevelOffset = CalcPageTableLevelOffset( ShadowMapID, MipLevel );
+
+	uint4 RectPages = uint4( Rect.Pixels ) >> VSM_LOG2_PAGE_SIZE;
+
+	for( uint y = RectPages.y; y <= RectPages.w; y++ )
+	{
+		for( uint x = RectPages.x; x <= RectPages.z; x++ )
+		{
+			uint2 vPage = uint2(x,y);
+			uint PageOffset = PageTableLevelOffset + CalcPageOffsetInLevel( MipLevel, vPage );
+			FShadowPhysicalPage pPage = ShadowDecodePageTable( ShadowHZBPageTable[ PageOffset ] );
+
+			if( !pPage.bThisLODValid )
+			{
+				// If this is a new page we can't consider everything occluded the first time.
+				//if( (VirtualShadowMap.PageFlags[ PageOffset ] & VSM_ALLOCATED_FLAG) != 0 )
+				return true;
+
+				// If the receiver points were projected into prev HZB space we could accurately ignore parts of the HZB that weren't relevent.
+			}
+			else
+			{
+				uint Shift = VSM_LOG2_PAGE_SIZE - 1 - Rect.HZBLevel;
+
+				FScreenRect ClippedRect = Rect;
+				ClippedRect.HZBTexels -= ( vPage << Shift ).xyxy;
+				ClippedRect.HZBTexels = clamp( ClippedRect.HZBTexels, 0, (int)HZB_PAGE_SIZE - 1 );
+				ClippedRect.HZBTexels += ( pPage.PhysicalAddress << Shift ).xyxy;
+
+				if( IsVisibleHZB( ClippedRect, true ) )
+					return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+ * Wrapper type to make misuse slightly harder.
+ */
+struct FPageTestScreenRect
+{
+	FScreenRect ScreenRect;
+	uint HZBLevelPageSizeShift;
+	int HZBLevelPageSizeInclusive;
+};
+
+
+/**
+ * Set up a screen rect and pre-computed data for testing pages against HZB, this assumes a 4x4-HZB FScreenRect
+ * as input. The resulting rect has been clamped to the mip level where a page is 4x4 texels, as higher mips are meaningless.
+ */
+FPageTestScreenRect SetupPageHZBRect(FScreenRect ScreenRect)
+{
+	FPageTestScreenRect Result;
+	Result.ScreenRect = ScreenRect;
+	// Clamp to level where a page is 4x4 (HZB mip 0 is half-size)
+	if (Result.ScreenRect.HZBLevel > (VSM_LOG2_PAGE_SIZE - 3))
+	{
+		// Adjust HZB texel rect to match new mip level, this will be too large, but is clipped below.
+		Result.ScreenRect.HZBTexels = int4(Result.ScreenRect.Pixels.xy, max(Result.ScreenRect.Pixels.xy, Result.ScreenRect.Pixels.zw)) >> (VSM_LOG2_PAGE_SIZE - 2U);
+		Result.ScreenRect.HZBLevel = VSM_LOG2_PAGE_SIZE - 3U;
+	}
+	Result.HZBLevelPageSizeShift = VSM_LOG2_PAGE_SIZE - 1U - Result.ScreenRect.HZBLevel;
+	Result.HZBLevelPageSizeInclusive = (1 << Result.HZBLevelPageSizeShift) - 1;
+	return Result;
+}
+
+
+bool IsPageVisibleHZB(uint2 vPage, uint PageFlagOffset, FPageTestScreenRect PageTestScreenRect, bool bSampleStaticPage = false)
+{
+	FShadowPhysicalPage pPage = ShadowDecodePageTable(ShadowHZBPageTable[PageFlagOffset]);
+
+	if (pPage.bThisLODValid)
+	{
+		uint2 PhysicalAddress = pPage.PhysicalAddress;
+		if ( bSampleStaticPage )
+		{
+			PhysicalAddress += GetVirtualShadowMapStaticPixelOffset() >> VSM_LOG2_PAGE_SIZE;
+		}
+
+		FScreenRect HZBTestRect = PageTestScreenRect.ScreenRect;
+
+		// Move to page local (in mip level) space and clamp rect to page size.
+		HZBTestRect.HZBTexels -= (vPage << PageTestScreenRect.HZBLevelPageSizeShift).xyxy;
+		HZBTestRect.HZBTexels = clamp(HZBTestRect.HZBTexels, 0, PageTestScreenRect.HZBLevelPageSizeInclusive);
+		// Translate to physical address space
+		HZBTestRect.HZBTexels += (PhysicalAddress << PageTestScreenRect.HZBLevelPageSizeShift).xyxy;
+
+		// Skip invalidation if the instance is occluded
+		return IsVisibleHZB(HZBTestRect, true);
+	}
+
+	return true;
+}
+
+/**
+ * Perform HZB-Test for a rectangle of pages, returning true if the Rect is visible in at least one page. 
+ * Skips unallocated pages, and returns 'visible' (true) for any page that contains any bit in the VisiblePageMask. This can be used
+ * to default un-cached pages to visible. If the PrevShadowMapID is INDEX_NONE, the function returns visible.
+ */
+bool IsVisibleValidMaskedHZB(uint PrevShadowMapID, uint VirtualShadowMapId, uint MipLevel, uint4 RectPages, FScreenRect Rect, uint VisiblePageMask)
+{
+	// Don't have an HZB to test.
+	if (PrevShadowMapID == ~0u)
+	{
+		return true;
+	}
+
+	FPageTestScreenRect HZBTestRect = SetupPageHZBRect(Rect);
+	uint PageTableLevelOffset = CalcPageTableLevelOffset(VirtualShadowMapId, MipLevel);
+	for (uint y = RectPages.y; y <= RectPages.w; y++)
+	{
+		for (uint x = RectPages.x; x <= RectPages.z; x++)
+		{
+			uint PageFlagOffset = PageTableLevelOffset + CalcPageOffsetInLevel(MipLevel, uint2(x, y));
+			uint PageFlag = VirtualShadowMap.PageFlags[PageFlagOffset];
+
+			// Skip un-allocated pages as we are not going to draw into them anyway
+			if ((PageFlag & VSM_ALLOCATED_FLAG) != 0)
+			{
+				// Treat pages with the VisiblePageMask as visible - can be used to select only cached pages
+				// Temp "hack": sample the static page HZB (if separate static pages are enabled) as it will tend to cull more things
+				if ((PageFlag & VisiblePageMask) != 0 || IsPageVisibleHZB(uint2(x, y), PageFlagOffset, HZBTestRect, true))
+				{
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
+}
+
+bool ShouldCacheInstanceAsStatic(FInstanceSceneData InstanceData)
+{
+	// TODO: Fix this with our own mobility flag, but for testing for now
+	// this flag should be stable and not change, which is a requirement.
+	//return (InstanceData.Flags & INSTANCE_SCENE_DATA_FLAG_HAS_DYNAMIC_DATA) == 0;
+
+	uint Flags = GetPrimitiveData(InstanceData.PrimitiveId).Flags;
+	//return (Flags & PRIMITIVE_SCENE_DATA_FLAG_HAS_CAST_CONTACT_SHADOW) != 0;
+	// DrawsVelocity is IsMovable() || IsBeingMovedByEditor() so good enough test for now
+	return (Flags & PRIMITIVE_SCENE_DATA_FLAG_DRAWS_VELOCITY) == 0;
+}
+
+uint GetPageFlagMaskForRendering(FInstanceSceneData InstanceData, bool bHasMoved)
+{
+	// Clustered that have moved must be rendered into any allocated page
+	// Otherwise they must be rendered only into uncached pages that match their "static/dynamic" instance type	
+	const uint PageFlagMask = 
+		bHasMoved ? VSM_ALLOCATED_FLAG :
+		(ShouldCacheInstanceAsStatic(InstanceData) ?  VSM_STATIC_UNCACHED_FLAG : VSM_DYNAMIC_UNCACHED_FLAG);
+	return PageFlagMask;
+}

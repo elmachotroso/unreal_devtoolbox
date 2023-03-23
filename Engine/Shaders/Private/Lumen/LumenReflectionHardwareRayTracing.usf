@@ -1,0 +1,245 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "../Common.ush"
+#include "../MonteCarlo.ush"
+#include "../SceneTextureParameters.ush"
+
+#include "LumenCardCommon.ush"
+#include "LumenTracingCommon.ush"
+#include "LumenReflectionCommon.ush"
+#include "LumenVisualizeTraces.ush"
+#include "LumenRadianceCacheCommon.ush"
+#include "LumenHardwareRayTracingPipelineCommon.ush"
+
+#ifndef THREADGROUP_SIZE_2D
+#define THREADGROUP_SIZE_2D 8
+#endif
+
+#ifndef THREADGROUP_SIZE_1D
+#define THREADGROUP_SIZE_1D THREADGROUP_SIZE_2D * THREADGROUP_SIZE_2D
+#endif
+
+#define LIGHTING_MODE_SURFACE_CACHE 0
+#define LIGHTING_MODE_HIT_LIGHTING 1
+
+Buffer<int> RayAllocator;
+Buffer<uint2> TraceTexelDataPacked;
+RWStructuredBuffer<FTraceDataPacked> RWTraceDataPacked;
+
+RWBuffer<uint> RWHardwareRayTracingIndirectArgs;
+
+[numthreads(1, 1, 1)]
+void FLumenReflectionHardwareRayTracingIndirectArgsCS()
+{
+	RWHardwareRayTracingIndirectArgs[0] = RayAllocator[0];
+	RWHardwareRayTracingIndirectArgs[1] = 1;
+	RWHardwareRayTracingIndirectArgs[2] = 1;
+
+#if DIM_INLINE_RAYTRACING
+	// For RayTraceDispatchIndirect we dispatch in threads but for DispatchIndirectComputeShader we dispatch in thread groups.
+	// We need to adjust it to get the same number of threads running.
+	RWHardwareRayTracingIndirectArgs[0] = (RWHardwareRayTracingIndirectArgs[0] + INLINE_RAY_TRACING_THREAD_GROUP_SIZE_X - 1) / INLINE_RAY_TRACING_THREAD_GROUP_SIZE_X;
+#endif
+}
+
+#if LUMEN_HARDWARE_RAYTRACING || LUMEN_HARDWARE_INLINE_RAYTRACING
+
+float3 FarFieldReferencePos;
+
+#include "LumenHardwareRayTracingCommon.ush"
+
+RaytracingAccelerationStructure TLAS;
+
+uint ThreadCount;
+uint GroupCount;
+int NearFieldLightingMode;
+float FarFieldBias;
+float FarFieldMaxTraceDistance;
+float FarFieldDitheredStartDistanceFactor;
+float PullbackBias;
+int MaxTranslucentSkipCount;
+uint MaxTraversalIterations;
+int ApplySkyLight;
+
+RWTexture2D<float3> RWTraceRadiance;
+RWTexture2D<float> RWTraceHit;
+
+#if LUMEN_HARDWARE_INLINE_RAYTRACING
+StructuredBuffer<FHitGroupRootConstants> HitGroupData;
+#endif // LUMEN_HARDWARE_INLINE_RAYTRACING
+
+LUMEN_HARDWARE_RAY_TRACING_ENTRY(LumenReflectionHardwareRayTracing)
+{
+	uint ThreadIndex = DispatchThreadIndex.x;
+	uint GroupIndex = DispatchThreadIndex.y;
+
+#if DIM_INDIRECT_DISPATCH
+	uint Iteration = 0;
+	uint DispatchedThreads = RayAllocator[0];
+#else
+	uint DispatchedThreads = ThreadCount * GroupCount;
+	uint IterationCount = (RayAllocator[0] + DispatchedThreads - 1) / DispatchedThreads;
+	for (uint Iteration = 0; Iteration < IterationCount; ++Iteration)
+#endif
+	{
+		uint RayIndex = Iteration * DispatchedThreads + GroupIndex * ThreadCount + ThreadIndex;
+		if (RayIndex >= RayAllocator[0])
+		{
+			return;
+		}
+
+#if (DIM_LIGHTING_MODE == LIGHTING_MODE_HIT_LIGHTING) || ENABLE_FAR_FIELD_TRACING
+		FTraceData TraceData = UnpackTraceData(RWTraceDataPacked[RayIndex]);
+		uint RayId = TraceData.RayId;
+#else
+		uint RayId = RayIndex;
+#endif // DIM_LIGHTING_MODE
+
+		uint2 TraceCoord;
+		float TraceHitDistance = 0;
+		float MaxTraceDistance;
+		DecodeTraceTexel(TraceTexelDataPacked[RayId], TraceCoord, TraceHitDistance, MaxTraceDistance);
+
+		float DitheredStartDistance = FarFieldDitheredStartDistanceFactor * MaxTraceDistance;
+		float DitheredMaxTraceDistance = CalcDitheredDistance(TraceCoord, DitheredStartDistance, MaxTraceDistance);
+
+		float2 ScreenUV = GetScreenUVFromReflectionTracingCoord(TraceCoord);
+		float2 ScreenCoord = ScreenUV * View.BufferSizeAndInvSize.xy;
+		uint LinearCoord = ScreenCoord.y * View.BufferSizeAndInvSize.x + ScreenCoord.x;
+
+		float SceneDepth = DownsampledDepth.Load(int3(TraceCoord, 0)).x;
+		float3 WorldPosition = GetWorldPositionFromScreenUV(ScreenUV, SceneDepth);
+		float3 WorldNormal = DecodeNormal(GBufferATexture.Load(int3(ScreenUV * View.BufferSizeAndInvSize.xy, 0)).xyz);
+
+		FRayData RayData = GetRayData(TraceCoord);
+
+		RayDesc Ray;
+		Ray.Origin = WorldPosition;
+		Ray.Direction = RayData.Direction;
+		float RayBias = ENABLE_FAR_FIELD_TRACING == 1 ? FarFieldBias : 0.05;
+		Ray.TMin = max(TraceHitDistance - PullbackBias, RayBias);
+		Ray.TMax = max(DitheredMaxTraceDistance - PullbackBias, RayBias);
+		Ray.TMax = min(Ray.TMax, RayData.TraceDistance);
+
+		float NormalBias = 0.05;
+		ApplyPositionBias(Ray.Origin, Ray.Direction, WorldNormal, NormalBias);
+
+		FRayCone RayCone = (FRayCone)0;
+		RayCone.SpreadAngle = View.EyeToPixelSpreadAngle;
+		RayCone = PropagateRayCone(RayCone, RayData.ConeHalfAngle, SceneDepth);
+
+		const bool bHiResSurface = true;
+		const uint CullingMode = RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
+		FRayTracedLightingContext Context = CreateRayTracedLightingContext(TLAS, RayCone, TraceCoord, LinearCoord, CullingMode, MaxTranslucentSkipCount, MaxTraversalIterations, bHiResSurface);
+		Context.FarFieldMaxTraceDistance = FarFieldMaxTraceDistance;
+		Context.FarFieldReferencePos = FarFieldReferencePos;
+		Context.bUseBookmark = true;
+
+#if DIM_LIGHTING_MODE == LIGHTING_MODE_HIT_LIGHTING
+		if (TraceData.bIsFarField)
+		{
+			Context.InstanceMask = RAY_TRACING_MASK_FAR_FIELD;
+			Ray.TMax = FarFieldMaxTraceDistance;
+		}
+		const float Epsilon = 0.5;
+		Ray.TMin = max(TraceData.TraceDistance - Epsilon, 0.0f);
+
+		int LightingMode = (TraceData.bIsFarField || !TraceData.bIsRadianceCompleted) ?
+			EVALUATE_MATERIAL_AND_DIRECT_LIGHTING :
+			NearFieldLightingMode;
+
+		FRayTracedLightingResult Result = TraceAndCalculateRayTracedLighting(Ray, Context, LightingMode, TraceData.Bookmark);
+
+		#define DEBUG_VISUAL_ASSERT_ON_RETRACE_MISS 0
+		#if DEBUG_VISUAL_ASSERT_ON_RETRACE_MISS
+			if (TraceData.bIsHit && !Result.bIsHit)
+			{
+				Result.Radiance = float3(10, 0, 10);
+				Result.bIsHit = true;
+			}
+		#endif
+
+#else // DIM_LIGHTING_MODE == LIGHTING_MODE_SURFACE_CACHE
+
+
+#if LUMEN_HARDWARE_INLINE_RAYTRACING
+		Context.HitGroupData = HitGroupData;
+#endif // LUMEN_HARDWARE_INLINE_RAYTRACING
+
+		FRayTracedLightingResult Result = TraceAndCalculateRayTracedLightingFromSurfaceCache(Ray, Context);
+
+#endif // DIM_LIGHTING_MODE
+
+#if ENABLE_NEAR_FIELD_TRACING && DIM_RADIANCE_CACHE
+		// If we're tracing a near field ray that missed, which has valid Radiance Cache coverage, use that for final lighting
+		if (!Result.bIsHit && RayData.bUseRadianceCache)
+		{
+			FConeTraceResult TraceResult;
+			TraceResult.Lighting = 0;
+			TraceResult.Transparency = 1;
+
+			FRadianceCacheCoverage Coverage = GetRadianceCacheCoverage(WorldPosition, RayData.Direction, InterleavedGradientNoise(TraceCoord, View.StateFrameIndexMod8));
+			SampleRadianceCacheAndApply(Coverage, WorldPosition, RayData.Direction, RayData.ConeHalfAngle, TraceResult.Lighting, TraceResult.Transparency);
+			Result.TraceHitDistance = RayData.TraceDistance;
+			Result.Radiance = TraceResult.Lighting;
+
+			Result.bIsHit = true;
+		}
+#endif
+
+		if ((ApplySkyLight != 0) && !Result.bIsHit)
+		{
+			FConeTraceResult TraceResult;
+			TraceResult.Lighting = Result.Radiance;
+			TraceResult.Transparency = 1;
+
+			EvaluateSkyRadianceForCone(RayData.Direction, tan(RayData.ConeHalfAngle), TraceResult);
+
+			Result.TraceHitDistance = MaxTraceDistance;
+			Result.Radiance = TraceResult.Lighting;
+			Result.bIsHit = true;
+		}
+
+#if DIM_PACK_TRACE_DATA
+		RWTraceDataPacked[RayIndex] = PackTraceData(CreateTraceData(
+			RayId,
+			Result.MaterialShaderIndex,
+			Result.Bookmark,
+			Result.TraceHitDistance,
+			Result.bIsHit,
+			Result.bIsRadianceCompleted,
+			Result.bIsFarField));
+#endif // DIM_PACK_TRACE_DATA
+
+#if DIM_WRITE_FINAL_LIGHTING
+		Result.Radiance *= View.PreExposure;
+
+		float MaxLighting = max3(Result.Radiance.x, Result.Radiance.y, Result.Radiance.z);
+
+		if (MaxLighting > MaxRayIntensity)
+		{
+			Result.Radiance *= MaxRayIntensity / MaxLighting;
+		}
+
+		RWTraceRadiance[TraceCoord] = Result.Radiance;
+		RWTraceHit[TraceCoord] = EncodeRayDistance(Result.TraceHitDistance, Result.bIsHit);
+
+		#define DEBUG_SUPPORT_VISUALIZE_TRACE_COHERENCY 0
+		#if DEBUG_SUPPORT_VISUALIZE_TRACE_COHERENCY
+			if (VisualizeTraceCoherency != 0)
+			{
+				uint DebugGroupIndex = 10240;
+				// UE_RAY_TRACING_DISPATCH_1D
+				int DebugTraceIndex = (int)RayIndex - (int)DebugGroupIndex * 32;
+
+				if (DebugTraceIndex >= 0 && DebugTraceIndex < 32)
+				{
+					WriteTraceForVisualization(DebugTraceIndex, WorldPosition, RayData.Direction, Result.TraceHitDistance, /*Result.Radiance*/float3(1, 0, 0));
+				}
+			}
+		#endif
+#endif // DIM_WRITE_FINAL_LIGHTING
+	}
+}
+
+#endif // LUMEN_HARDWARE_RAYTRACING

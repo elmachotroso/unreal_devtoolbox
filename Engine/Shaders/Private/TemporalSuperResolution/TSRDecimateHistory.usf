@@ -1,0 +1,339 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "TSRCommon.ush"
+
+
+//------------------------------------------------------- CONFIG
+
+#define TILE_SIZE 8
+
+#define CONFIG_KERNEL 0
+
+#define CONFIG_OUTPUT_HALF_RES (DIM_OUTPUT_HALF_RES)
+
+
+//------------------------------------------------------- PARAMETERS
+
+float4x4 RotationalClipToPrevClip;
+float3 OutputQuantizationError;
+
+Texture2D<tsr_halfC> InputSceneColorTexture;
+Texture2D<float2> DilatedVelocityTexture;
+Texture2D<float> ClosestDepthTexture;
+Texture2D<uint> PrevUseCountTexture;
+Texture2D<uint> PrevClosestDepthTexture;
+Texture2D<uint> ParallaxFactorTexture;
+
+Texture2D<tsr_halfC> PrevHistory_LowFrequency;
+Texture2D<tsr_halfC> PrevHistory_HighFrequency;
+Texture2D<tsr_half2> PrevHistory_Metadata;
+Texture2D<tsr_half4> PrevHistory_Translucency;
+Texture2D<tsr_subpixel_details> PrevHistory_SubpixelDetails;
+
+RWTexture2D<tsr_halfC> HalfResSceneColorOutput;
+RWTexture2D<tsr_halfC> HalfResPredictionSceneColorOutput;
+RWTexture2D<tsr_half> HalfResParallaxRejectionMaskOutput;
+
+RWTexture2D<tsr_halfC> PredictionSceneColorOutput;
+RWTexture2D<tsr_half> ParallaxRejectionMaskOutput;
+
+
+//------------------------------------------------------- LDS
+
+groupshared tsr_halfC SharedInputColor[TILE_SIZE * TILE_SIZE];
+
+#if CONFIG_SCENE_COLOR_APLHA
+groupshared tsr_halfC SharedHistoryColor[TILE_SIZE * TILE_SIZE];
+groupshared tsr_half  SharedMask[TILE_SIZE * TILE_SIZE];
+#else
+groupshared tsr_half4 SharedHistoryColorAndMask[TILE_SIZE * TILE_SIZE];
+#endif
+
+
+//------------------------------------------------------- ENTRY POINT
+
+tsr_half3 TransformToComparisonColorSpace(tsr_half3 Color)
+{
+	return Color;
+	//return log2(Color);
+	//return Color *HdrWeight4(Color); // *float3(HdrWeightY(Color.r), HdrWeightY(Color.g), HdrWeightY(Color.b));
+}
+
+
+//------------------------------------------------------- ENTRY POINT
+
+[numthreads(TILE_SIZE, TILE_SIZE, 1)]
+void MainCS(
+	uint2 GroupId : SV_GroupID,
+	uint GroupThreadIndex : SV_GroupIndex)
+{
+	float4 Debug = 0;
+	
+	uint2 DispatchThreadId = (
+		ZOrder2D(GroupThreadIndex, uint(log2(float(TILE_SIZE)))) +
+		GroupId * uint2(TILE_SIZE, TILE_SIZE));
+
+	uint2 InputPixelPos = InputInfo_ViewportMin + DispatchThreadId;
+	
+	float2 ViewportUV = (float2(DispatchThreadId) + 0.5f) * InputInfo_ViewportSizeInverse;
+	float2 ScreenPos = ViewportUVToScreenPos(ViewportUV);
+	float2 InputBufferUV = (InputPixelPos + 0.5) * InputInfo_ExtentInverse;
+	
+	float2 EncodedVelocity = DilatedVelocityTexture[InputPixelPos];
+	float DeviceZ = ClosestDepthTexture[InputPixelPos];
+	tsr_half ParallaxFactor = UncompressParallaxFactor((ParallaxFactorTexture[InputPixelPos] >> 4) & 0xF);
+	tsr_halfC InputSceneColor = InputSceneColorTexture[InputPixelPos];
+
+	float WorldDepth = ConvertFromDeviceZ(DeviceZ);
+	
+	// Compute the parralax rejection mask
+	tsr_half ParallaxRejectionMask = 0.0;
+	{
+		float2 PrevScreenPos = ScreenPos - DecodeVelocityFromTexture(float4(EncodedVelocity, 0.0, 0.0)).xy;
+		float2 PrevInputBufferUV = (InputInfo_ScreenPosToViewportScale * PrevScreenPos + InputInfo_ScreenPosToViewportBias) * InputInfo_ExtentInverse;
+		
+		FBilinearSampleInfos BilinearInter = GetBilinearSampleLevelInfos(PrevInputBufferUV, InputInfo_Extent, InputInfo_ExtentInverse);
+
+		UNROLL_N(4)
+		for (uint i = 0; i < 4; i++)
+		{
+			float BilinearWeight = GetSampleWeight(BilinearInter, i);
+			uint2 PixelPos = GetSamplePixelCoord(BilinearInter, i);
+
+			bool bValidPixelPos = all(PixelPos >= InputInfo_ViewportMin && PixelPos < InputInfo_ViewportMax);
+
+			#if COMPRESS_PREV_USE_COUNT
+				uint2 CompressedUseCountPixelPos;
+				uint Shift;
+				ComputeCompressedUseCountPixelCoordinates(PixelPos, /* out */ CompressedUseCountPixelPos, /* out */ Shift);
+
+				uint HistoryUseCount = (PrevUseCountTexture[CompressedUseCountPixelPos] >> (8 * Shift)) & 0xFF;
+			#else
+				uint HistoryUseCount = PrevUseCountTexture[PixelPos];
+			#endif
+
+			float HistoryClosestDeviceZ = f16tof32(PrevClosestDepthTexture[PixelPos] >> VELOCITY_HOLE_FILLING_BITS);
+			float HistoryClosestWorldDepth = ConvertFromDeviceZ(HistoryClosestDeviceZ);
+
+			tsr_half DepthRejection;
+			{
+				const float WorldDepthToPixelWorldRadius = GetTanHalfFieldOfView().x * InputInfo_ViewportSizeInverse.x;
+				const float PixelDepthError = 3.0;
+				const float RadiusToDiamater = 2.0;
+			
+				float WorldDepthEpsilon = (WorldDepthToPixelWorldRadius * RadiusToDiamater * PixelDepthError) * HistoryClosestWorldDepth; 
+				float DeltaDepth = abs(HistoryClosestWorldDepth - WorldDepth);
+
+				DepthRejection = saturate(tsr_half(2.0) - tsr_half(DeltaDepth / WorldDepthEpsilon));
+			}
+
+			tsr_half HistoryGhostingRejection = saturate(tsr_half(1.0) - tsr_half(3.0) * abs(tsr_half(HistoryUseCount) * rcp(tsr_half(PREV_USE_COUNT_QUANTIZATION)) - tsr_half(1.0)));
+
+			FLATTEN
+			if (bValidPixelPos)
+				ParallaxRejectionMask += tsr_half(BilinearWeight) * max(DepthRejection, HistoryGhostingRejection);
+		}
+	}
+
+	// Pixel coordinate of the input pixel in the predictor viewport.
+	float2 InputPPCk = float2(InputPixelPos - InputInfo_ViewportMin) + 0.5f - InputJitter;
+	float2 OutputViewportUV = InputPPCk * InputInfo_ViewportSizeInverse;
+	float2 OutputScreenPos = ViewportUVToScreenPos(OutputViewportUV);
+
+	float2 PrevOutputScreenPos = OutputScreenPos - DecodeVelocityFromTexture(float4(EncodedVelocity, 0.0, 0.0)).xy;
+
+	float2 PrevOutputViewportUV = ScreenPosToViewportUV(PrevOutputScreenPos);
+
+	float2 HistoryPPCk = PrevOutputViewportUV * PrevHistoryInfo_ViewportSize;
+
+	// Pixel coordinate of the center of the nearest predictor pixel O.
+	float2 HistoryPPCo = floor(HistoryPPCk) + 0.5;
+	float2 HistoryBufferUV = HistoryPPCo * PrevHistoryInfo_ExtentInverse;
+
+	// Vector in pixel between pixel K -> O.
+	tsr_half2 dKO = tsr_half2(HistoryPPCo - HistoryPPCk);
+	
+	// Sample the history
+	tsr_halfC DecimatedColor;
+	tsr_half HistoryMaxRejectionFactor;
+
+	tsr_half ClosestInterferenceSeed;
+	tsr_half IntegratedInterferenceSeed;
+	tsr_half MinInterferenceSeed;
+	tsr_half MaxInterferenceSeed;
+	{
+		float2 KernelHistoryBufferUV = clamp(
+			HistoryPPCk * PrevHistoryInfo_ExtentInverse,
+			PrevHistoryInfo_UVViewportBilinearMin,
+			PrevHistoryInfo_UVViewportBilinearMax);
+		
+		float2 PrevInputBufferUV = (InputInfo_ScreenPosToViewportScale * PrevOutputScreenPos + InputInfo_ScreenPosToViewportBias) * InputInfo_ExtentInverse;
+
+		#if 1
+		{
+			DecimatedColor = PrevHistory_LowFrequency.SampleLevel(GlobalBilinearClampedSampler, KernelHistoryBufferUV, 0);
+		}
+		#else
+		{
+			DecimatedColor = 0.0;
+			UNROLL_N(4)
+			for (uint i = 0; i < 4; i++)
+			{
+				const float2 PixelOffset = float2(Offsets2x2[i]) - 0.5;
+
+				float2 SampleBufferUV = KernelHistoryBufferUV + PixelOffset * PrevHistoryInfo_ExtentInverse; 
+				SampleBufferUV = clamp(
+					SampleBufferUV,
+					PrevHistoryInfo_UVViewportBilinearMin,
+					PrevHistoryInfo_UVViewportBilinearMax);
+				
+				tsr_halfC HistorySample = PrevHistory_LowFrequency.SampleLevel(GlobalBilinearClampedSampler, SampleBufferUV, 0);
+
+				DecimatedColor += HistorySample;
+			}
+
+			DecimatedColor *= rcp(4.0);
+		}
+		#endif
+
+		// Compute the parallax rejection factor of the details in the history.
+		FSubpixelNeighborhood SubpixelNeigborhood = GatherPrevSubpixelNeighborhood(PrevHistory_SubpixelDetails, KernelHistoryBufferUV);
+		{
+			uint EncodedHistoryMaxRejectionFactor = 0;
+
+			UNROLL_N(SUB_PIXEL_COUNT)
+			for (uint SubpixelId = 0; SubpixelId < SUB_PIXEL_COUNT; SubpixelId++)
+			{
+				tsr_subpixel_payload SubpixelPayload = GetSubpixelPayload(SubpixelNeigborhood, SubpixelId);
+				tsr_subpixel_payload EncodedRejectionFactor = (SubpixelPayload >> SUB_PIXEL_PARALLAX_FACTOR_BIT_OFFSET) & SUB_PIXEL_PARALLAX_FACTOR_BIT_MASK;
+
+				EncodedHistoryMaxRejectionFactor = max(EncodedHistoryMaxRejectionFactor, EncodedRejectionFactor);
+			}
+
+			HistoryMaxRejectionFactor = UncompressParallaxFactor(EncodedHistoryMaxRejectionFactor);
+		}
+	}
+	
+	// Reject subpixel details that might be in history but not input just based on their parrallax
+	{
+		tsr_half HistorySubdetailRejectionFactor = max(HistoryMaxRejectionFactor / ParallaxFactor, tsr_half(1.0));
+
+		float4 ThisClip = float4(ScreenPos, DeviceZ, 1);
+		float4 PrevClip = mul(ThisClip, View.ClipToPrevClip);
+		float2 PrevScreen = PrevClip.xy / PrevClip.w;
+			
+		float4 RotationalPrevClip = mul(ThisClip, RotationalClipToPrevClip);
+		float2 RotationalPrevScreen = RotationalPrevClip.xy / RotationalPrevClip.w;
+			
+		tsr_half PixelParallaxVelocity = tsr_half(0.5) * length(tsr_half2(RotationalPrevScreen - PrevScreen) * tsr_half2(InputInfo_ViewportSize));
+		tsr_half HistorySubdetailAdditionalParralax = (HistorySubdetailRejectionFactor - tsr_half(1.0)) * PixelParallaxVelocity;
+
+		// PixelParallaxVelocity can be +inf and generate NaN if HistorySubdetailRejectionFactor = 1.0;
+		HistorySubdetailAdditionalParralax = -min(-HistorySubdetailAdditionalParralax, tsr_half(0.0));
+
+		tsr_half HistoryParallaxRejectionMask = saturate(tsr_half(1.0) - HistorySubdetailAdditionalParralax);
+
+		ParallaxRejectionMask = min(ParallaxRejectionMask, HistoryParallaxRejectionMask);
+	}
+
+	// Immediately reject based on the rejection mask
+	FLATTEN
+	if ((PrevOutputScreenPos.x < -1.0) ||
+		(PrevOutputScreenPos.y < -1.0) ||
+		(PrevOutputScreenPos.x > 1.0) ||
+		(PrevOutputScreenPos.y > 1.0))
+	//if (IsOffScreen2(bCameraCut, PrevOutputScreenPos, /* ParallaxRejectionMask = */ 1.0))
+	{
+		ParallaxRejectionMask = tsr_half(0.0);
+	}
+
+	
+	#if CONFIG_OUTPUT_HALF_RES
+	{
+		SharedInputColor[GroupThreadIndex] = InputSceneColor;
+		#if CONFIG_SCENE_COLOR_APLHA
+			SharedHistoryColor[GroupThreadIndex] = DecimatedColor;
+			SharedMask[GroupThreadIndex] = ParallaxRejectionMask;
+		#else
+			SharedHistoryColorAndMask[GroupThreadIndex] = tsr_half4(DecimatedColor, ParallaxRejectionMask);
+		#endif
+
+		GroupMemoryBarrierWithGroupSync();
+
+		bool bCheckerboard = (((InputPixelPos.x ^ InputPixelPos.y) >> 1) & 0x1) != 0;
+
+		tsr_halfC HalfResInputSceneColor = InputSceneColor;
+		tsr_halfC HalfResDecimatedColor = DecimatedColor;
+		tsr_half HalfResParallaxRejectionMask = ParallaxRejectionMask;
+
+		UNROLL
+		for (uint i = 1; i < 4; i++)
+		{
+			uint ButterflySwap = i;
+			
+			if (bCheckerboard)
+			{
+				HalfResInputSceneColor = min(HalfResInputSceneColor, SharedInputColor[GroupThreadIndex ^ ButterflySwap]);
+			}
+			else
+			{
+				HalfResInputSceneColor = max(HalfResInputSceneColor, SharedInputColor[GroupThreadIndex ^ ButterflySwap]);
+			}
+			
+			#if CONFIG_SCENE_COLOR_APLHA
+				HalfResDecimatedColor += SharedHistoryColor[GroupThreadIndex ^ ButterflySwap];
+				HalfResParallaxRejectionMask += SharedMask[GroupThreadIndex ^ ButterflySwap];
+			#else
+				HalfResDecimatedColor += SharedHistoryColorAndMask[GroupThreadIndex ^ ButterflySwap].rgb;
+				HalfResParallaxRejectionMask += SharedHistoryColorAndMask[GroupThreadIndex ^ ButterflySwap].a;
+			#endif
+		}
+
+		HalfResDecimatedColor *= tsr_half(0.25);
+		HalfResParallaxRejectionMask *= tsr_half(0.25);
+
+		#if CONFIG_ENABLE_STOCASTIC_QUANTIZATION
+		{
+			uint2 Random = Rand3DPCG16(int3((InputPixelPos - InputInfo_ViewportMin) / 2, View.StateFrameIndexMod8)).xy;
+			tsr_half E = tsr_half(Hammersley16(0, 1, Random).x);
+
+			HalfResInputSceneColor = QuantizeForFloatRenderTarget(HalfResInputSceneColor, E, OutputQuantizationError);
+			HalfResDecimatedColor = QuantizeForFloatRenderTarget(HalfResDecimatedColor, E, OutputQuantizationError);
+		}
+		#endif
+
+		if (all(InputPixelPos < InputInfo_ViewportMax) && all(((InputPixelPos - InputInfo_ViewportMin) % 2) == 0))
+		{
+			HalfResSceneColorOutput[InputPixelPos / 2] = HalfResInputSceneColor;
+			HalfResPredictionSceneColorOutput[InputPixelPos / 2] = HalfResDecimatedColor;
+			HalfResParallaxRejectionMaskOutput[InputPixelPos / 2] = HalfResParallaxRejectionMask;
+		}
+	}
+	#endif
+
+	#if CONFIG_ENABLE_STOCASTIC_QUANTIZATION
+	{
+		uint2 Random = Rand3DPCG16(int3(InputPixelPos - InputInfo_ViewportMin, View.StateFrameIndexMod8)).xy;
+		tsr_half E = tsr_half(Hammersley16(0, 1, Random).x);
+
+		DecimatedColor = QuantizeForFloatRenderTarget(DecimatedColor, E, OutputQuantizationError);
+	}
+	#endif
+
+	if (all(InputPixelPos < InputInfo_ViewportMax))
+	{
+		#if !CONFIG_OUTPUT_HALF_RES
+		{
+			PredictionSceneColorOutput[InputPixelPos] = DecimatedColor;
+		}
+		#endif
+		
+		ParallaxRejectionMaskOutput[InputPixelPos] = ParallaxRejectionMask;
+
+		#if DEBUG_OUTPUT
+		{
+			DebugOutput[InputPixelPos] = Debug;
+		}
+		#endif
+	}
+}

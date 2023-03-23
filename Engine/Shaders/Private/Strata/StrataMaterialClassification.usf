@@ -1,0 +1,195 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "/Engine/Private/Common.ush"
+
+#define STRATA_INLINE_SHADING 0
+#define STRATA_SSS_MATERIAL_OVERRIDE 0
+#include "/Engine/Private/Strata/Strata.ush"
+
+#define STRATA_TILE_SIZE 8
+#define GROUP_THREAD_COUNT (STRATA_TILE_SIZE * STRATA_TILE_SIZE)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// DecodeTile is in StrataTiling.usf.
+uint EncodeTile(uint2 TileCoord)
+{
+	return TileCoord.x | (TileCoord.y << 16); // assumes 16bit is enough to represent a tiled resolution up to 65,535 :)
+}
+
+#if SHADER_TILE_CATEGORIZATION
+int TileSize;
+int bRectPrimitive;
+int2 ViewResolution;
+uint MaxBytesPerPixel;
+Texture2D<uint> TopLayerTexture;
+Texture2DArray<uint> MaterialTextureArray;
+// Fast/Simple
+RWBuffer<uint> SimpleTileIndirectDataBuffer;
+RWBuffer<uint> SimpleTileListDataBuffer;
+// Single
+RWBuffer<uint> SingleTileIndirectDataBuffer;
+RWBuffer<uint> SingleTileListDataBuffer;
+// Complex
+RWBuffer<uint> ComplexTileIndirectDataBuffer;
+RWBuffer<uint> ComplexTileListDataBuffer;
+
+#if !PERMUTATION_WAVE_OPS
+groupshared uint s_TileFlags[GROUP_THREAD_COUNT];
+#endif
+
+#if PERMUTATION_STRATA_CLEAR_DURING_CATEGORIZATION
+RWTexture2D<uint2> SSSTextureUAV;
+#endif
+
+[numthreads(STRATA_TILE_SIZE, STRATA_TILE_SIZE, 1)]
+void TileMainCS(uint2 DispatchThreadId : SV_DispatchThreadID, uint LinearIndex : SV_GroupIndex, uint3 GroupId : SV_GroupID)
+{
+	if (all(DispatchThreadId == 0))
+	{
+		SimpleTileIndirectDataBuffer[0] = bRectPrimitive > 0 ? 4 : 6;
+		SingleTileIndirectDataBuffer[0] = bRectPrimitive > 0 ? 4 : 6;
+		ComplexTileIndirectDataBuffer[0] = bRectPrimitive > 0 ? 4 : 6;
+	}
+
+	// TODO: add a SM6 permutation with ballot?
+	const uint2 PixelCoord = DispatchThreadId;
+
+	// Pixels outside of the view area are considered simple to enable screen borders to receive the simple permutation when not aligned to shader group size.
+	bool bContainsComplexMaterial = false;
+	bool bContainsSimpleMaterial  = false;
+	bool bContainsSingleMaterial  = false;
+	bool bContainsStrataMaterial  = false;
+	bool bHasScreenSpaceSubsurfaceScattering = false;
+	if (all(PixelCoord < uint2(ViewResolution)))
+	{
+		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelCoord, uint2(View.BufferSizeAndInvSize.xy), MaxBytesPerPixel);
+		FStrataPixelHeader StrataPixelHeader = UnpackStrataHeaderIn(MaterialTextureArray, StrataAddressing, TopLayerTexture);
+
+		const bool bIsSimple =  IsSimpleMaterial(StrataPixelHeader) || StrataPixelHeader.BSDFCount == 0; // BSDFCount == 0 ensures that non-strata pixel, like sky pixels, won't make a simple tile flagged as complex
+		const bool bIsSingle = !IsSimpleMaterial(StrataPixelHeader) && IsSingleMaterial(StrataPixelHeader);
+		bContainsStrataMaterial  = StrataPixelHeader.BSDFCount > 0;
+		bContainsSimpleMaterial  = bIsSimple;
+		bContainsSingleMaterial  = bIsSingle;
+		bContainsComplexMaterial = !bIsSingle & !bIsSimple;
+		bHasScreenSpaceSubsurfaceScattering = HasSubsurface(StrataPixelHeader);
+	}
+
+#if PERMUTATION_STRATA_CLEAR_DURING_CATEGORIZATION
+	BRANCH
+	if (!bHasScreenSpaceSubsurfaceScattering)
+	{
+		// We must fill all the pixel which doe not hav subsurface scattering with default so that the SSS code is not executed where it should not.
+		FStrataSubsurfaceData StrataSubsurfaceData = (FStrataSubsurfaceData)0;
+		SSSTextureUAV[DispatchThreadId.xy] = StrataPackSSSData(StrataSubsurfaceData);
+	}
+#endif
+
+#if PERMUTATION_WAVE_OPS
+	const bool bHasAnyStrata  = WaveActiveAnyTrue(bContainsStrataMaterial);
+//	const bool bHasAnySimple  = WaveActiveAnyTrue(bContainsSimpleMaterial);
+	const bool bHasAnySingle  = WaveActiveAnyTrue(bContainsSingleMaterial);
+	const bool bHasAnyComplex = WaveActiveAnyTrue(bContainsComplexMaterial);
+#else // PERMUTATION_WAVE_OPS
+
+	s_TileFlags[LinearIndex] = 
+		(bContainsStrataMaterial  ? 0x1u : 0u) | 
+//		(bContainsSimpleMaterial  ? 0x2u : 0u) | 
+		(bContainsSingleMaterial  ? 0x4u : 0u) | 
+		(bContainsComplexMaterial ? 0x8u : 0u);
+
+	GroupMemoryBarrierWithGroupSync();
+	if (LinearIndex < 32)
+	{
+		s_TileFlags[LinearIndex] = s_TileFlags[LinearIndex] | s_TileFlags[LinearIndex + 32];
+	}
+	GroupMemoryBarrierWithGroupSync();
+	if (LinearIndex < 16)
+	{
+		s_TileFlags[LinearIndex] = s_TileFlags[LinearIndex] | s_TileFlags[LinearIndex + 16];
+	}
+	GroupMemoryBarrierWithGroupSync();
+
+	if (LinearIndex < 8)
+	{
+		s_TileFlags[LinearIndex] = s_TileFlags[LinearIndex] | s_TileFlags[LinearIndex + 8];
+	}
+	GroupMemoryBarrierWithGroupSync();
+	if (LinearIndex < 4)
+	{
+		s_TileFlags[LinearIndex] = s_TileFlags[LinearIndex] | s_TileFlags[LinearIndex + 4];
+	}
+	GroupMemoryBarrierWithGroupSync();
+	if (LinearIndex < 2)
+	{
+		s_TileFlags[LinearIndex] = s_TileFlags[LinearIndex] | s_TileFlags[LinearIndex + 2];
+	}
+	GroupMemoryBarrierWithGroupSync();
+
+	const uint FinalTileFlags = s_TileFlags[LinearIndex] | s_TileFlags[LinearIndex + 1];
+
+	const bool bHasAnyStrata  = (FinalTileFlags & 0x1u) > 0;
+//	const bool bHasAnySimple  = (FinalTileFlags & 0x2u) > 0;
+	const bool bHasAnySingle  = (FinalTileFlags & 0x4u) > 0;
+	const bool bHasAnyComplex = (FinalTileFlags & 0x8u) > 0;
+#endif // PERMUTATION_WAVE_OPS
+
+	if (LinearIndex < 1 && bHasAnyStrata)
+	{
+		if (bHasAnyComplex)
+		{
+			uint WriteToIndex;
+			InterlockedAdd(ComplexTileIndirectDataBuffer[1], 1, WriteToIndex);
+			ComplexTileListDataBuffer[WriteToIndex] = EncodeTile(GroupId.xy);
+		}
+		else if (bHasAnySingle)
+		{
+			uint WriteToIndex;
+			InterlockedAdd(SingleTileIndirectDataBuffer[1], 1, WriteToIndex);
+			SingleTileListDataBuffer[WriteToIndex] = EncodeTile(GroupId.xy);
+		}
+		else // (bHasAnySimple)
+		{
+			uint WriteToIndex;
+			InterlockedAdd(SimpleTileIndirectDataBuffer[1], 1, WriteToIndex);
+			SimpleTileListDataBuffer[WriteToIndex] = EncodeTile(GroupId.xy);
+		}
+	}
+}
+#endif // SHADER_TILE_CATEGORIZATION
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#if SHADER_CLEAR_MATERIAL_BUFFER
+
+RWTexture2DArray<uint> MaterialTextureArrayUAV;
+RWTexture2D<uint2> SSSTextureUAV;
+uint MaxBytesPerPixel;
+int2 TiledViewBufferResolution;
+
+[numthreads(8, 8, 1)]
+void ClearMaterialBufferMainCS(uint2 DispatchThreadId : SV_DispatchThreadID)
+{
+	if (any(int2(DispatchThreadId.xy) >= TiledViewBufferResolution))
+	{
+		return;
+	}
+
+	// Custom clear of the Strata material buffer.
+	// The first layer of tiled uints contains the header that we need to clear so we only write a single uint per pixel instead of clearing the entire buffer which would be too slow.
+
+	FStrataPixelHeader StrataHeader = InitialiseStrataPixelHeader();
+	uint BSDFCount = 0;
+	uint PackedStrataHeader = PackStrataHeader(BSDFCount, StrataHeader);
+
+	const uint FirstSlice = 0;
+	MaterialTextureArrayUAV[uint3(DispatchThreadId.xy, FirstSlice)] = PackedStrataHeader;
+
+	FStrataSubsurfaceData StrataSubsurfaceData = (FStrataSubsurfaceData)0;
+	SSSTextureUAV[DispatchThreadId.xy] = StrataPackSSSData(StrataSubsurfaceData);
+}
+
+#endif // SHADER_CLEAR_MATERIAL_BUFFER
+
+////////////////////////////////////////////////////////////////////////////////////////////////////////////
+

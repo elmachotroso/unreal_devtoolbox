@@ -1,0 +1,325 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#include "DeferredShadingCommon.ush"
+#include "VelocityCommon.ush"
+
+#if PROJECT_STRATA
+#include "SceneTexturesCommon.ush"
+#include "Strata/Strata.ush"
+RWTexture2DArray<uint> MaterialTextureArrayUAV;
+uint MaxBytesPerPixel;
+#endif
+int DebugProbesMode;
+
+
+
+#define PROBE_MODE_SPECULAR	0
+#define PROBE_MODE_DIFFUSE	1
+#define PROBE_MODE_BOTH		2
+
+// Must match DebugProbeRendering.usf
+#define RENDER_DEPTHPREPASS	0
+#define RENDER_BASEPASS		1
+#define RENDER_VELOCITYPASS	2
+
+
+
+void DebugSphereIntersection(
+	float3 RayOrig, float3 RayDir, float3 SphereCenter, float SphereRadius, int NewProbeMode, in bool bNewProbeAttachedToCamera,
+	inout int ProbeMode, inout float RayT, inout float3 WorlPosition, inout float3 Normal, inout bool bProbeAttachedToCamera)
+{
+	float2 RayTs = RayIntersectSphere(RayOrig, RayDir, float4(SphereCenter, SphereRadius));
+	float NewRayT = max(0.0f, min(RayTs.x, RayTs.y));
+
+	if (NewRayT > 0.0f && (NewRayT < RayT || RayT==-1.0f))
+	{
+		RayT = NewRayT;
+		ProbeMode = NewProbeMode;
+		WorlPosition = RayOrig + RayDir * RayT;
+		Normal = normalize(WorlPosition - SphereCenter);
+		bProbeAttachedToCamera = bNewProbeAttachedToCamera;
+
+		if (ProbeMode == PROBE_MODE_BOTH)
+		{
+			bool bOn = Normal.z > 0.0f;
+			bOn = Normal.y > 0.0f ? !bOn : bOn;
+			bOn = Normal.x > 0.0f ? !bOn : bOn;
+			ProbeMode = bOn ? PROBE_MODE_SPECULAR : PROBE_MODE_DIFFUSE;
+		}
+	}
+}
+
+
+
+void MainPS(
+	  in  float4 SvPosition		: SV_Position
+	, out float4 OutColor		: SV_Target0
+#if PERMUTATION_PASS == RENDER_BASEPASS
+	, out float4 OutGBufferA	: SV_Target1
+	, out float4 OutGBufferB	: SV_Target2
+	, out float4 OutGBufferC	: SV_Target3
+	, out float4 OutGBufferD	: SV_Target4
+	, out float4 OutGBufferE	: SV_Target5
+#endif
+	, out float  OutDepth		: SV_DEPTH
+)
+{
+	ResolvedView = ResolveView();
+	const uint2 PixelCoord = uint2(SvPosition.xy);
+
+	float2 ScreenPosition = SvPositionToScreenPosition(SvPosition).xy;
+	const float Depth = 1000000.0f;
+	float4 TranslatedWorldPos = mul(float4(ScreenPosition * Depth, Depth, 1), View.ScreenToTranslatedWorld);
+
+	const float3 RayDir = normalize(TranslatedWorldPos.xyz - View.TranslatedWorldCameraOrigin);
+	const float3 RayOrig = LWCHackToFloat(ResolvedView.WorldCameraOrigin);
+
+	int ProbeMode = false;
+	bool bProbeAttachedToCamera = false;
+	float RayT = -1.0f;
+	float3 WorlPosition = 0.0f;
+	float3 Normal = 0.0f;
+
+
+	// Render the camera probes (this could be done proceppdurally as flat sphere normal on screen rotated by inverse view matrix)
+	if (DebugProbesMode == 1 || DebugProbesMode == 3)
+	{
+		{
+			float3 SphereCenter = LWCHackToFloat(ResolvedView.WorldCameraOrigin) + (ResolvedView.ViewForward * 1.0f + ResolvedView.ViewRight * 0.5f + ResolvedView.ViewUp * -0.2f) * METER_TO_CENTIMETER;
+			float  SphereRadius = 0.2f * METER_TO_CENTIMETER;
+
+			DebugSphereIntersection(
+				RayOrig, RayDir, SphereCenter, SphereRadius, PROBE_MODE_SPECULAR, true,
+				ProbeMode, RayT, WorlPosition, Normal, bProbeAttachedToCamera);
+		}
+		{
+			float3 SphereCenter = LWCHackToFloat(ResolvedView.WorldCameraOrigin) + (ResolvedView.ViewForward * 1.0f + ResolvedView.ViewRight * -0.5f + ResolvedView.ViewUp * -0.2f) * METER_TO_CENTIMETER;
+			float  SphereRadius = 0.2f * METER_TO_CENTIMETER;
+
+			DebugSphereIntersection(
+				RayOrig, RayDir, SphereCenter, SphereRadius, PROBE_MODE_DIFFUSE, true,
+				ProbeMode, RayT, WorlPosition, Normal, bProbeAttachedToCamera);
+		}
+	}
+
+
+	// Render the world probes around the camera
+	if (DebugProbesMode == 2 || DebugProbesMode == 3)
+	{
+		const float SphereRadius = 0.5f * METER_TO_CENTIMETER;
+
+#if 1
+		// Using Amanatides 3D-DDA to march virtual voxels around the camera and only evaluate intersection for sphere inside each voxel.
+		const float3 VoxelSizeCm = float3(5.0f, 5.0f, 5.0f) * METER_TO_CENTIMETER;
+		const float3 SnappedOrigin = (floor(LWCHackToFloat(ResolvedView.WorldCameraOrigin) / VoxelSizeCm) + 0.5) * VoxelSizeCm
+								   + float3(0.0f, 0.0f, 1.4 * SphereRadius);	// Small offset to have probes above the ground level 0
+
+		const float3 BoxMin = SnappedOrigin - VoxelSizeCm * 4.0f;
+		const float3 BoxMax = SnappedOrigin + VoxelSizeCm * 4.0f;
+
+		float3 StartP = (RayOrig - BoxMin) / VoxelSizeCm;
+		float3 P = StartP;
+
+		// Amanatides 3D-DDA data preparation
+		float3 stepSign = sign(RayDir);
+		float3 tDelta = abs(1.0f / RayDir);
+		float3 tMax = float3(0.0f, 0.0f, 0.0f);
+		float3 refPoint = floor(P);
+		tMax.x = stepSign.x > 0.0f ? refPoint.x + 1.0f - P.x : P.x - refPoint.x; // floor is more consistent than ceil
+		tMax.y = stepSign.y > 0.0f ? refPoint.y + 1.0f - P.y : P.y - refPoint.y;
+		tMax.z = stepSign.z > 0.0f ? refPoint.z + 1.0f - P.z : P.z - refPoint.z;
+		tMax.x *= tDelta.x;
+		tMax.y *= tDelta.y;
+		tMax.z *= tDelta.z;
+
+		LOOP
+		while (all(dot(StartP - P, StartP - P) <= 5.1f * 5.1f))	// stop after a distance of 5 voxels is reached 
+		{
+			const float3 SphereCenter = BoxMin + (floor(P) + 0.5) * VoxelSizeCm;
+
+			DebugSphereIntersection(
+				RayOrig, RayDir, SphereCenter, SphereRadius, PROBE_MODE_BOTH, false,
+				ProbeMode, RayT, WorlPosition, Normal, bProbeAttachedToCamera);
+
+			// Amanatides 3D-DDA 
+			if (tMax.x < tMax.y)
+			{
+				if (tMax.x < tMax.z)
+				{
+					P.x += stepSign.x;
+					tMax.x += tDelta.x;
+				}
+				else
+				{
+					P.z += stepSign.z;
+					tMax.z += tDelta.z;
+				}
+			}
+			else
+			{
+				if (tMax.y < tMax.z)
+				{
+					P.y += stepSign.y;
+					tMax.y += tDelta.y;
+				}
+				else
+				{
+					P.z += stepSign.z;
+					tMax.z += tDelta.z;
+				}
+			}
+		}
+
+#else
+		// Simple but slow volume around the camera
+		const float3 Steps = float3(5.0f, 5.0f, 2.5f);
+		const float3 SnappedOrigin = floor(LWCHackToFloat(ResolvedView.WorldCameraOrigin) / (Steps * METER_TO_CENTIMETER) + 0.5) * Steps * METER_TO_CENTIMETER
+								   + float3(0.0f, 0.0f, 1.4 * SphereRadius);	// Small offset to have probes above the ground level 0
+		LOOP
+		for (float x = -15.0f * METER_TO_CENTIMETER; x <= 15.0f * METER_TO_CENTIMETER; x += Steps.x * METER_TO_CENTIMETER)
+		{
+			LOOP
+			for (float y = -15.0f * METER_TO_CENTIMETER; y <= 15.0f * METER_TO_CENTIMETER; y += Steps.y * METER_TO_CENTIMETER)
+			{
+				LOOP
+				for (float z = -5.0f * METER_TO_CENTIMETER; z <= 5.0f * METER_TO_CENTIMETER; z += Steps.z * METER_TO_CENTIMETER)
+				{
+					float3 SphereCenter = SnappedOrigin + float3(x, y, z);
+
+					DebugSphereIntersection(
+						RayOrig, RayDir, SphereCenter, SphereRadius, PROBE_MODE_BOTH, false,
+						ProbeMode, RayT, WorlPosition, Normal, bProbeAttachedToCamera);
+				}
+			}
+		}
+#endif
+	}
+
+
+	float4 ClipPos = mul(float4(WorlPosition, 1.0f), LWCHackToFloat(ResolvedView.WorldToClip));
+	ClipPos /= ClipPos.w;
+	const float DeviceZ = ClipPos.z;
+	OutDepth = DeviceZ;
+
+	if (RayT <= 0.0f)
+	{
+		discard;
+		return;
+	}
+
+
+#if PERMUTATION_PASS == RENDER_VELOCITYPASS
+
+	float3 Velocity = 0.0f;
+
+	if (!bProbeAttachedToCamera)
+	{
+		float4 ScreenPos	= mul(float4(WorlPosition.xyz + LWCHackToFloat(ResolvedView.PreViewTranslation), 1),	ResolvedView.TranslatedWorldToClip);
+		float4 PrevScreenPos= mul(float4(WorlPosition.xyz + LWCHackToFloat(ResolvedView.PrevPreViewTranslation), 1),ResolvedView.PrevTranslatedWorldToClip);
+		Velocity = Calculate3DVelocity(ScreenPos, PrevScreenPos);
+	}
+
+	OutColor = EncodeVelocityToTexture(Velocity);
+
+#elif PERMUTATION_PASS == RENDER_BASEPASS
+
+	const float PerObjectGBufferData = 0.0f;
+	const float SelectiveOutputMask = 0.0f;
+
+	const float3 BaseColor = 1.0f;
+	const float  Metallic = ProbeMode == PROBE_MODE_DIFFUSE ? 0.0f : 1.0f;
+	const float  Specular = ProbeMode == PROBE_MODE_DIFFUSE ? 0.0f : 1.0f;
+	const float  Roughness = 0.01f;
+	const float  IndirectIrradianceAndAO = 0.0f;
+
+#if PROJECT_STRATA
+
+	// EarlyDepthStencil does not work because we render a simple quad on screen with custom OutDepth.
+	// We cannot rely on late depth test because pixel shader would have already operated the write to strata buffer.
+	// So we must execute a manual depth test in shader (fine because basepass does not write depth)
+	float2 UvBuffer = SvPosition.xy * View.BufferSizeAndInvSize.zw;	// Uv for depth buffer read (size can be larger than viewport)
+	const float DepthBufferDeviceZ = LookupDeviceZ(UvBuffer);
+	if (DepthBufferDeviceZ < (DeviceZ+0.000001))
+	{
+		FStrataPixelHeader StrataPixelHeader = InitialiseStrataPixelHeader();
+
+		uint SharedLocalBasisIndex = 0;
+		StrataPixelHeader.SharedLocalBases.Normals[SharedLocalBasisIndex] = normalize(Normal);
+		StrataPixelHeader.SharedLocalBases.Count = 1;
+
+		FStrataData StrataData = GetStrataSlabBSDF(
+			/*float UseMetalness					*/true,
+			/*float3 BaseColor						*/BaseColor,
+			/*float3 EdgeColor						*/1.0f,
+			/*float Specular						*/Specular,
+			/*float Metallic						*/Metallic,
+			/*float3 DiffuseAlbedo					*/0.0f,
+			/*float3 F0								*/0.0f,
+			/*float3 F90							*/0.0f,
+			/*float Roughness						*/Roughness,
+			/*float Anisotropy						*/0.0f,
+			/*float SSSProfileID					*/0.0f,
+			/*float3 SSSDMFP						*/0.0f,
+			/*float SSSDMFPScale					*/0.0f,
+			/*float3 Emissive						*/0.0f,
+			/*float Haziness						*/0.0f,
+			/*float ThinFilmThickness				*/0.0f,
+			/*float FuzzAmount						*/0.0f,
+			/*float3 FuzzColor						*/0.0f,
+			/*float Thickness						*/0.0f,
+			/*uint SharedLocalBasisIndex			*/SharedLocalBasisIndex,
+			/*inout uint SharedLocalBasisTypes		*/StrataPixelHeader.SharedLocalBases.Types);
+
+		StrataPixelHeader.MaterialAO = 1.0f - IndirectIrradianceAndAO;
+		StrataPixelHeader.BSDFCount = 1;
+
+		FStrataSubsurfaceData SSSData = (FStrataSubsurfaceData)0;
+		FStrataTopLayerData TopLayerData = (FStrataTopLayerData)0;
+
+		float3 EmissiveLuminance = 0.0f;
+		bool bStrataSubsurfaceEnable = false;
+		const float Dither = 0.0f;
+		FStrataAddressing StrataAddressing = GetStrataPixelDataByteOffset(PixelCoord, uint2(ResolvedView.BufferSizeAndInvSize.xy), MaxBytesPerPixel);
+		FRWStrataMaterialContainer RWStrataMaterialContainer = InitialiseRWStrataMaterialContainer(MaterialTextureArrayUAV);
+		PackStrataOut(
+			RWStrataMaterialContainer, 
+			MaterialTextureArrayUAV,
+			Dither,
+			StrataAddressing,
+			StrataPixelHeader, StrataData, -RayDir, bStrataSubsurfaceEnable, EmissiveLuminance,
+			SSSData, TopLayerData);
+		// TODO write out the two MRT uint?
+	}
+	
+#else // PROJECT_STRATA
+
+	// We write all outputs, the rasterizer will discard what is not bound. That is fine since we do not care that much about performance for this debug view.
+
+	OutGBufferA = float4(
+		EncodeNormal(Normal), 
+		PerObjectGBufferData);
+
+	OutGBufferB = float4(
+		Metallic, 
+		Specular, 
+		Roughness, 
+		EncodeShadingModelIdAndSelectiveOutputMask(SHADINGMODELID_DEFAULT_LIT, SelectiveOutputMask));
+
+	OutGBufferC = float4(BaseColor, IndirectIrradianceAndAO);
+	OutGBufferD = float4(0.0f, 0.0f, 0.0f, 0.0f);	// custom data
+	OutGBufferE = float4(1.0f, 1.0f, 1.0f, 1.0f);	// Pre computed shadow factor
+
+#endif // PROJECT_STRATA
+
+	OutColor = 0.0f;
+
+#endif // PERMUTATION_PASS
+
+
+
+#if PERMUTATION_PASS == RENDER_VELOCITYPASS || PERMUTATION_PASS == RENDER_DEPTHPREPASS || (PERMUTATION_PASS == RENDER_BASEPASS && PROJECT_STRATA == 0)
+	// Base pass with strata cannot write to depth because it is going to execute in shader depth testing
+	OutDepth = DeviceZ;
+#endif
+
+}

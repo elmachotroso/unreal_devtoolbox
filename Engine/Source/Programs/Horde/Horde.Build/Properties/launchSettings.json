@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "HordeServer": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "Horde__DisableSchedules": "true"
+      }
+    }
+  }
+}

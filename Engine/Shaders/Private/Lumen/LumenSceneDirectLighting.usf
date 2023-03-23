@@ -1,0 +1,147 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	LumenSceneDirectLighting.usf
+=============================================================================*/
+
+#include "../Common.ush"
+#include "LumenCardCommon.ush"
+#include "LumenCardTile.ush"
+#define SUPPORT_CONTACT_SHADOWS 0
+#define USE_IES_PROFILE 1
+#include "../DeferredLightingCommon.ush"
+#include "../VolumeLightingCommon.ush"
+#define FILTER_DIRECTIONAL_LIGHT_SHADOWING 1
+#include "../ForwardShadowingCommon.ush"
+#include "/Engine/Generated/Material.ush"
+#include "../LightFunctionCommon.ush"
+#include "../GlobalDistanceFieldUtils.ush"
+#include "../DistanceFieldLightingShared.ush"
+#define DF_SHADOW_QUALITY 2
+#include "../DistanceFieldShadowingShared.ush"
+#if USE_CLOUD_TRANSMITTANCE
+	#include "../VolumetricCloudCommon.ush"
+#endif
+#include "LumenSceneDirectLighting.ush"
+
+/** Fade distance in x, disabled brightness in y, output for preview shadows mask in z. */
+float3 LightFunctionParameters2;
+
+float GetLightFunction(float3 TranslatedWorldPosition) 
+{
+	float4 LightVector = mul(float4(TranslatedWorldPosition, 1), LightFunctionTranslatedWorldToLight);
+	float3 LightFunction = GetLightFunctionColor(LightVector.xyz / LightVector.w, TranslatedWorldPosition);
+
+	float GreyScale = dot(LightFunction, .3333f).x;
+
+	// Calculate radial view distance for stable fading
+	float ViewDistance = length(PrimaryView.TranslatedWorldCameraOrigin - TranslatedWorldPosition);
+
+	float DistanceFadeAlpha = saturate((LightFunctionParameters2.x - ViewDistance) / (LightFunctionParameters2.x * .2f));
+	// Fade to disabled based on LightFunctionFadeDistance
+	GreyScale = lerp(LightFunctionParameters2.y, GreyScale, DistanceFadeAlpha);
+
+	// Fade to disabled based on ShadowFadeFraction
+	GreyScale = lerp(LightFunctionParameters2.y, GreyScale, LightFunctionParameters.y);
+	return GreyScale;
+}
+
+uint UseIESProfile;
+
+void LumenCardDirectLightingPS(
+	FCardVSToPS CardInterpolants,
+	out float4 OutColor : SV_Target0,
+	float4 SvPosition : SV_Position)
+{
+	FShadowMaskRay ShadowMaskRay;
+	ShadowMaskRay.bShadowFactorComplete = true;
+	ShadowMaskRay.ShadowFactor = 1.0f;
+
+	bool bValidTexel = true;
+	#if SHADOW_MASK
+	{
+		uint2 CoordInCardTile = SvPosition.xy % CARD_TILE_SIZE;
+		ReadShadowMaskRay(CardInterpolants.CardTileIndex, CoordInCardTile, ShadowMaskRay);
+	}
+	#else
+	{
+		float Opacity = Texture2DSampleLevel(LumenCardScene.OpacityAtlas, GlobalBilinearClampedSampler, CardInterpolants.AtlasUV, 0).x;
+		bValidTexel = Opacity > 0.0f;
+	}
+	#endif
+
+	float3 Irradiance = 0.0f;
+
+	if (bValidTexel && ShadowMaskRay.ShadowFactor > 0.0f)
+	{
+		FDeferredLightData LightData = LoadLightData(LIGHT_TYPE);
+
+		float Depth = 1.0f - Texture2DSampleLevel(LumenCardScene.DepthAtlas, GlobalBilinearClampedSampler, CardInterpolants.AtlasUV, 0).x;
+
+		FLumenCardPageData CardPage = GetLumenCardPageData(CardInterpolants.CardPageIndex);
+		FLumenCardData Card = GetLumenCardData(CardPage.CardIndex);
+		float3 WorldPosition = GetCardWorldPosition(Card, CardInterpolants.CardUV, Depth);
+		float3 TranslatedWorldPosition = WorldPosition + LWCHackToFloat(PrimaryView.PreViewTranslation);
+
+		float3 LightColor = DeferredLightUniforms.Color;
+		float3 L = LightData.Direction;
+		float3 ToLight = L;
+	
+#if LIGHT_TYPE == LIGHT_TYPE_DIRECTIONAL
+		float CombinedAttenuation = 1;
+#else
+		float LightMask = 1;
+		if (LightData.bRadialLight)
+		{
+			LightMask = GetLocalLightAttenuation(TranslatedWorldPosition, LightData, ToLight, L);
+		}
+
+		float Attenuation;
+
+		if (LightData.bRectLight)
+		{
+			FRect Rect = GetRect(ToLight, LightData);
+			FRectTexture RectTexture = InitRectTexture(DeferredLightUniforms.SourceTexture);
+			Attenuation = IntegrateLight(Rect, RectTexture);
+		}
+		else
+		{
+			FCapsuleLight Capsule = GetCapsule(ToLight, LightData);
+			Capsule.DistBiasSqr = 0;
+			Attenuation = IntegrateLight(Capsule, LightData.bInverseSquared);
+		}
+
+		float CombinedAttenuation = Attenuation * LightMask;
+#endif
+
+		if (CombinedAttenuation > 0)
+		{
+			float3 WorldNormal = DecodeSurfaceCacheNormal(Card, Texture2DSampleLevel(LumenCardScene.NormalAtlas, GlobalBilinearClampedSampler, CardInterpolants.AtlasUV, 0).xy);
+
+			if (dot(WorldNormal, L) > 0)
+			{
+				#if LIGHT_FUNCTION
+					ShadowMaskRay.ShadowFactor *= GetLightFunction(TranslatedWorldPosition);
+				#endif
+
+				#if USE_CLOUD_TRANSMITTANCE
+				{
+					float OutOpticalDepth = 0.0f;
+					ShadowMaskRay.ShadowFactor *= lerp(1.0f, GetCloudVolumetricShadow(TranslatedWorldPosition, CloudShadowmapTranslatedWorldToLightClipMatrix, CloudShadowmapFarDepthKm, CloudShadowmapTexture, CloudShadowmapSampler, OutOpticalDepth), CloudShadowmapStrength);
+				}
+				#endif
+
+				if (UseIESProfile > 0)
+				{
+					ShadowMaskRay.ShadowFactor *= ComputeLightProfileMultiplier(TranslatedWorldPosition, DeferredLightUniforms.TranslatedWorldPosition, -DeferredLightUniforms.Direction, DeferredLightUniforms.Tangent);
+				}
+
+				float NoL = saturate(dot(WorldNormal, L));
+				Irradiance = LightColor * (CombinedAttenuation * NoL * ShadowMaskRay.ShadowFactor);
+				//Irradiance = bShadowFactorValid ? float3(0, 1, 0) : float3(0.2f, 0.0f, 0.0f);
+			}
+		}
+	}
+		
+	OutColor = float4(Irradiance, 0);
+}

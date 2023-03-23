@@ -1,0 +1,482 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "../Common.ush"
+
+struct FStrataLegacyParameters
+{
+	bool UseMetalness;
+	float3 DiffuseAlbedo;
+	float3 F0;
+	float3 F90;
+
+	float3 BaseColor;
+	float  Specular;
+	float  Metallic;
+	float  Roughness;
+	float  Anisotropy;
+	float  SSSProfileID;
+	float3 SSSDMFP;
+	float  SSSDMFPScale;
+	float3 Emissive;
+	float  FuzzAmount;
+	float3 FuzzColor;
+	float  Thickness;
+	uint   SharedLocalBasisIndex;
+
+	float Weight;
+};
+
+FStrataLegacyParameters InitStrataLegacyParameters(uint InSharedLocalBasisIndex, float InWeight)
+{
+	const float3 Zeros = float3(0, 0, 0);
+
+	FStrataLegacyParameters Out;
+
+	Out.UseMetalness = true;
+	Out.DiffuseAlbedo = Zeros;
+	Out.F0 = Zeros;
+	Out.F90 = Zeros;
+
+	Out.BaseColor = Zeros;
+	Out.Specular = 0.5f;
+	Out.Metallic = 0.f;
+	Out.Roughness = 0.5f;
+	Out.Anisotropy = 0.f;
+	Out.SSSProfileID = 0.f;
+	Out.SSSDMFP = Zeros;
+	Out.SSSDMFPScale = 1.f;
+	Out.Emissive = Zeros;
+	Out.FuzzAmount = 0.f;
+	Out.FuzzColor = Zeros;
+	Out.Thickness = STRATA_LAYER_DEFAULT_THICKNESS_CM;
+	Out.SharedLocalBasisIndex = InSharedLocalBasisIndex;
+	Out.Weight = InWeight;
+	return Out;
+}
+
+FStrataData CreateLegacySlab(FStrataLegacyParameters In, inout uint SharedLocalBasisTypes)
+{
+	const float3 Zeros = float3(0, 0, 0);
+	const float3 Ones  = float3(1, 1, 1);
+
+	// Fixed layer structure for helping compiler to unroll and optimize shader
+	return GetStrataSlabBSDF(
+		In.UseMetalness,	// UseMetalness
+		In.BaseColor,		// BaseColor		-  Metalness workflow
+		Ones,				// EdgeColor		-  Metalness workflow
+		In.Specular,		// Specular			-  Metalness workflow
+		In.Metallic,		// Metallic			-  Metalness workflow
+		In.DiffuseAlbedo,	// DiffuseAlbedo	- !Metalness workflow
+		In.F0,				// F0				- !Metalness workflow
+		In.F90,				// F90				- !Metalness workflow
+		In.Roughness,		// Roughness
+		In.Anisotropy,		// Anisotropy
+		In.SSSProfileID,	// SSSProfileID
+		In.SSSDMFP,			// SSSDMFP
+		In.SSSDMFPScale,	// SSSDMFPScale
+		In.Emissive,		// Emissive
+		0.f,				// Haziness
+		0.f,				// ThinFilmThickness
+		In.FuzzAmount,		// FuzzAmount
+		In.FuzzColor,		// FuzzColor
+		In.Thickness,
+		In.SharedLocalBasisIndex, SharedLocalBasisTypes);
+}
+
+// Convert legacy shading models - Dynamic
+// This function can handle dynamic shading models (i.e., known only at runtime). 
+// For this, the layer topology is 'fixed' and composed of two slabs vertically layered. This is done for 
+// helping the compiler to unroll Strata BSDF traversing and packing. In most cases, the bottom slab is 
+// weighted by 0 and it will be removed once the data are written-out/packed.
+FStrataData StrataConvertLegacyMaterialDynamic(
+	float3 BaseColor, float Specular, float Metallic,
+	float Roughness, float Anisotropy,
+	float3 SubSurfaceColor, float SubSurfaceProfileId,
+	float ClearCoat, float ClearCoatRoughness,
+	float3 Emissive,
+	float Opacity,
+	float3 TransmittanceColor,
+	float3 WaterScatteringCoefficients, float3 WaterAbsorptionCoefficients, float WaterPhaseG, float3 ColorScaleBehindWater,
+	uint ShadingModel,
+	uint SharedLocalBasisIndex,
+	uint ClearCoatBottomNormal_SharedLocalBasisIndex,
+	inout uint SharedLocalBasisTypes)
+{
+	const float DefaultThickness = STRATA_LAYER_DEFAULT_THICKNESS_CM;
+	const float3 Zeros = float3(0, 0, 0);
+	const float3 Ones  = float3(1, 1, 1);
+
+	// Can only mix Unlit / DefaultLit / Sub-Surface / Preintegrated-Skin / Subsurface-Profile / ClearCoat / Foliage / Cloth / Eye/ Thin
+	// No supported : Water/Hair
+
+	// Top/Bottom
+	FStrataLegacyParameters Top = InitStrataLegacyParameters(SharedLocalBasisIndex, 1.0f);
+	FStrataLegacyParameters Bot = InitStrataLegacyParameters(SharedLocalBasisIndex, 1.0f);
+
+	float FinalWeight = 1.0f;
+
+	if (ShadingModel == SHADINGMODELID_UNLIT)
+	{
+		// Unlit is handle with a emissive slab
+		Top.BaseColor = Zeros;
+		Top.Specular = 0.f;
+		Top.Metallic = 0.f;
+		Top.Roughness = 0.f;
+		Top.Anisotropy = Anisotropy;
+		Top.Emissive = Emissive;
+
+		Bot.Weight = 0.f;
+		FinalWeight = Opacity;
+	}
+	else if (ShadingModel == SHADINGMODELID_DEFAULT_LIT)
+	{
+		Top.BaseColor = BaseColor;
+		Top.Specular = Specular;
+		Top.Metallic = Metallic;
+		Top.Roughness = Roughness;
+		Top.Anisotropy = Anisotropy;
+		Top.Emissive = Emissive;
+
+		Bot.Weight = 0.f;
+		FinalWeight = Opacity;
+	}
+	else if (ShadingModel == SHADINGMODELID_SUBSURFACE || ShadingModel == SHADINGMODELID_PREINTEGRATED_SKIN)
+	{
+		// Subsurface model has a subsurface color and a base color which are additive through normal warpping. 
+		// We emulate that by adding them together
+		const float3 ModifiedBaseColor = BaseColor + SubSurfaceColor;
+
+		// For Subsurface and Pre-integrated subsurface opacity acts as lerp between SSS (0) and Opaque(1), 
+		// so we need to (saturate and) inverse with a OneMinus node.
+		float3 SSSMFP = 1.f - saturate(Opacity);
+
+		// Subsurface color is converted into a MFP by taking the subsurface color and multipling it with the 1-Opacity 
+		// and a constant scaling for matching roughly the behavior
+		SSSMFP = SSSMFP * 0.5f;
+
+		Top.BaseColor = ModifiedBaseColor;
+		Top.Specular = Specular;
+		Top.Metallic = Metallic;
+		Top.Roughness = Roughness;
+		Top.Anisotropy = Anisotropy;
+		Top.SSSDMFP = SSSMFP;
+		Top.SSSDMFPScale = Opacity;
+		Top.Emissive = Emissive;
+
+		// No need to take into account opacity weighting for translucent material, as the coverage is assumed to be 1
+		Bot.Weight = 0.f;
+		FinalWeight = 1.f;
+	}
+	else if (ShadingModel == SHADINGMODELID_SUBSURFACE_PROFILE)
+	{
+		Top.BaseColor = BaseColor;
+		Top.Specular = Specular;
+		Top.Metallic = Metallic;
+		Top.Roughness = Roughness;
+		Top.Anisotropy = Anisotropy;
+		Top.SSSProfileID = SubSurfaceProfileId;
+		Top.SSSDMFPScale = Opacity;
+		Top.Emissive = Emissive;
+
+		// No need to take into account opacity weighting for translucent material, as the coverage is assumed to be 1
+		Bot.Weight = 0.f;
+		FinalWeight = 1.f;
+	}
+	else if (ShadingModel == SHADINGMODELID_CLEAR_COAT)
+	{
+		// === BOTTOM layer === 
+		Bot.BaseColor = BaseColor;
+		Bot.Specular = Specular;
+		Bot.Metallic = Metallic;
+		Bot.Roughness = Roughness;
+		Bot.Anisotropy = Anisotropy;
+		Bot.SSSProfileID = 0.f;
+		Bot.SSSDMFP = Zeros;
+		Bot.SSSDMFPScale = 0.f;
+		Bot.Emissive = Zeros;
+		Bot.SharedLocalBasisIndex = ClearCoatBottomNormal_SharedLocalBasisIndex;
+		Bot.Weight = 1.f;
+		// === TOP layer === 
+		 																								   
+		// The top layer has a hard coded specular value of 0.5 (F0 = 0.04)
+		// BaseColor = 0 to only feature absorption, no scattering
+
+		// The original clear coat is a complex assemblage of arbitrary functions that do not always make sense. 
+		// To simplify things, we set the top slab BSDF as having a constant Grey scale transmittance. 
+		// As for the original, this is achieved with coverage so both transmittance and specular contribution vanishes
+
+		// Now setup the mean free path with a hard coded transmittance of 0.75 when viewing the surface perpendicularly
+		const float Thickness = DefaultThickness;
+		const float3 MFP = TransmittanceToMeanFreePath(0.75f, Thickness * CENTIMETER_TO_METER) * METER_TO_CENTIMETER;
+
+		Top.BaseColor = Zeros;
+		Top.Specular = 0.5f;
+		Top.Metallic = 0.f;
+		Top.Roughness = ClearCoatRoughness;
+		Top.Anisotropy = Anisotropy;
+		Top.SSSProfileID = 0.f;
+		Top.SSSDMFP = MFP;
+		Top.SSSDMFPScale = 1.f;
+		Top.Emissive = Emissive;
+		Top.Thickness = Thickness;
+		Top.SharedLocalBasisIndex = SharedLocalBasisIndex;
+		Top.Weight = ClearCoat;
+
+		FinalWeight = Opacity;
+	}
+	else if (ShadingModel == SHADINGMODELID_TWOSIDED_FOLIAGE)
+	{
+		// Set a thickness that will enabled the thin lighting model (corresponding to the legacy two-sided lighting model)
+		const float Thickness = STRATA_LAYER_ISTHIN_THICKNESS_THRESHOLD_CM - 1e-5f;
+		const float3 MFP = TransmittanceToMeanFreePath(SubSurfaceColor /*TransmittanceColor*/, Thickness * CENTIMETER_TO_METER) * METER_TO_CENTIMETER;
+
+		Top.BaseColor = BaseColor;
+		Top.Specular = Specular;
+		Top.Metallic = Metallic;
+		Top.Roughness = Roughness;
+		Top.Anisotropy = Anisotropy;
+		Top.SSSProfileID = 0.f;
+		Top.SSSDMFP = MFP;
+		Top.SSSDMFPScale = 1.f;
+		Top.Emissive = Emissive;
+		Top.Thickness = Thickness;
+
+		// Take in account the legacy opacity weighting for translucent material
+		Bot.Weight = 0.f;
+		FinalWeight = Opacity;
+	}
+	else if (ShadingModel == SHADINGMODELID_CLOTH)
+	{
+		Top.BaseColor = BaseColor;
+		Top.Specular = Specular;
+		Top.Metallic = Metallic;
+		Top.Roughness = Roughness;
+		Top.Anisotropy = Anisotropy;
+		Top.SSSProfileID = 0.f;
+		Top.SSSDMFP = 0.f;
+		Top.SSSDMFPScale = 0.f;
+		Top.Emissive = Emissive;
+		Top.FuzzAmount = ClearCoat;
+		Top.FuzzColor = SubSurfaceColor;
+
+		Bot.Weight = 0.f;
+		FinalWeight = Opacity;
+	}
+	else if (ShadingModel == SHADINGMODELID_EYE)
+	{
+		const float IrisMask = ClearCoat;
+		const float IrisDistance = ClearCoatRoughness;
+
+		// Lerp transmittance rather MFP, as transmittance is perceptually linear unlike MFP
+		const float Thickness = DefaultThickness;
+		const float3 MFP = TransmittanceToMeanFreePath(IrisMask.xxx, Thickness * CENTIMETER_TO_METER) * METER_TO_CENTIMETER;
+
+		// Cornea/Sclera
+		Top.BaseColor = BaseColor;
+		Top.Specular = Specular;
+		Top.Metallic = 0.f;
+		Top.Roughness = Roughness;
+		Top.Anisotropy = 0.f;
+		Top.SSSProfileID = SubSurfaceProfileId;
+		Top.SSSDMFP = MFP;
+		Top.SSSDMFPScale = Opacity;
+		Top.Emissive = Emissive;
+		Top.SharedLocalBasisIndex = SharedLocalBasisIndex;
+		Top.Weight = 1.f;
+
+		// Iris
+		Bot.BaseColor = BaseColor;
+		Bot.Specular = Specular;
+		Bot.Metallic = .0f;
+		Bot.Roughness = Roughness;
+		Bot.Anisotropy = 0.f;
+		Bot.SSSProfileID = SubSurfaceProfileId;
+		Bot.SSSDMFP = Zeros;
+		Bot.SSSDMFPScale = Opacity;
+		Bot.Emissive = Emissive;
+		Bot.SharedLocalBasisIndex = ClearCoatBottomNormal_SharedLocalBasisIndex;
+		Bot.Weight = 1.f;
+
+		// No need to take into account opacity weighting for translucent material, as the coverage is assumed to be 1
+		FinalWeight = 1.0f;
+	}
+	else if (ShadingModel == SHADINGMODELID_THIN_TRANSLUCENT)	
+	{
+		const float Thickness = DefaultThickness;
+
+		// If the material is dieletric, bias the opacity so that the dieletric part extend further. This better matches the two layer approaches.
+		Opacity = lerp(1.f - Square(1.f - Opacity), Opacity, Metallic);
+
+		// Because we are using a single slab for simulating a 'coverage mix' between two BSDFs (a opaque metallic/conductor and a non-scattering translucent medium), 
+		// we need to do some approximation. In order to reduce avoid hue shift due to difference between 'solid' base-color/diffuse-albedo and 'transparent' transmission 
+		// color, we lerp BaseColor with transmittance color in LAB space so that the interpolated color minized its 'distance' 
+		const float3 BaseColor_LAB			= LinearRGB_2_LAB(BaseColor, XYZ_WHITE_REF_D65);
+		const float3 TransmittanceColor_LAB = LinearRGB_2_LAB(TransmittanceColor, XYZ_WHITE_REF_D65);
+		const float3 Color_LAB			    = lerp(TransmittanceColor_LAB, BaseColor_LAB, Opacity);
+		const float3 Color					= LAB_2_LinearRGB(Color_LAB, XYZ_WHITE_REF_D65);
+
+		// Lerp the transmittance color rather than MFP as it is more perceptually linear
+		const float3 MFP = TransmittanceToMeanFreePath(lerp(Color, Zeros, Opacity), Thickness * CENTIMETER_TO_METER) * METER_TO_CENTIMETER;
+
+		const float F0Dieletrict = DielectricSpecularToF0(Specular);
+
+		const float3 TopF0     = lerp(F0Dieletrict, BaseColor, Metallic);
+		const float3 TopAlbedo = Color * (1.f - Metallic);
+		const float3 TopMFP    = 0;
+
+		const float3 BotF0     = F0Dieletrict;
+		const float3 BotAlbedo = Zeros;
+		const float3 BotMFP    = MFP;
+
+		Top.DiffuseAlbedo	= lerp(BotAlbedo, TopAlbedo, Opacity);
+		Top.SSSDMFP			= lerp(BotMFP,    TopMFP,    Opacity);
+		Top.F0				= lerp(BotF0,     TopF0,     Opacity);
+		Top.F90				= Ones;
+		Top.UseMetalness	= false;
+		Top.Roughness 		= Roughness;
+		Top.Anisotropy 		= 0.f;
+		Top.SSSProfileID 	= 0.f;
+		Top.SSSDMFPScale 	= 1.f;
+		Top.Emissive 		= Emissive;
+		Top.Thickness 		= Thickness;
+		Top.SharedLocalBasisIndex = SharedLocalBasisIndex;
+
+		Top.Weight  = 1.0f;
+		Bot.Weight  = 0.f;
+		FinalWeight = 1.0f;
+
+		// Reference two layers approach
+	#if 0
+		// Top slab BSDF as a simple Disney material
+		Top.BaseColor = BaseColor;
+		Top.Specular = Specular;
+		Top.Metallic = Metallic;
+		Top.Roughness = Roughness;
+		Top.Anisotropy = Anisotropy;
+		Top.SSSProfileID = 0.f;
+		Top.SSSDMFP = Zeros;
+		Top.SSSDMFPScale = 0.f;
+		Top.Emissive = Emissive;
+		Top.SharedLocalBasisIndex = SharedLocalBasisIndex;
+
+		// Bottom slab BSDF will be a simple absorption only layer
+		const float Thickness = DefaultThickness;
+		const float3 MFP = TransmittanceToMeanFreePath(TransmittanceColor, Thickness * CENTIMETER_TO_METER) * METER_TO_CENTIMETER;
+
+		// Assign specular properties shared with the top layer.
+		Bot.BaseColor = Zeros;
+		Bot.Specular = Specular;
+		Bot.Metallic = .0f;
+		Bot.Roughness = Roughness;
+		Bot.Anisotropy = 0.f;
+		Bot.SSSProfileID = .0f;
+		Bot.SSSDMFP = MFP;
+		Bot.SSSDMFPScale = 1.f;
+		Bot.Emissive = Zeros;
+		Bot.Thickness = Thickness;
+		Bot.SharedLocalBasisIndex = ClearCoatBottomNormal_SharedLocalBasisIndex;
+
+		// No need to take into account opacity weighting for translucent material, as the coverage is assumed to be 1
+		// Now weight the top base material by opacity
+		Top.Weight = Opacity;
+	#endif
+	}
+
+	// Fixed layer structure for helping compiler to unroll and optimize shader
+	FStrataData Top_Slab = CreateLegacySlab(Top, SharedLocalBasisTypes);
+	FStrataData Bot_Slab = CreateLegacySlab(Bot, SharedLocalBasisTypes);
+	FStrataData Out = StrataVerticalLayering(StrataWeight(Top_Slab, Top.Weight), StrataWeight(Bot_Slab, Bot.Weight));
+
+	// Take in account the legacy opacity weighting for translucent material
+	#if !MATERIALBLENDING_MASKED && !MATERIALBLENDING_SOLID
+	{
+		Out = StrataWeight(Out, FinalWeight);
+	}
+	#endif
+
+	return Out;
+}
+
+// Convert legacy shading models - Static
+// This function is for static single shading model (i.e., known at shader compilation time). 
+// It reuses the dynamic version for most part, but for special node like Unlit/Hair/Water, 
+// we use the dedicated node
+FStrataData StrataConvertLegacyMaterialStatic(
+	float3 BaseColor, float Specular, float Metallic,
+	float Roughness, float Anisotropy,
+	float3 SubSurfaceColor, float SubSurfaceProfileId,
+	float ClearCoat, float ClearCoatRoughness,
+	float3 Emissive,
+	float Opacity,
+	float3 TransmittanceColor,
+	float3 WaterScatteringCoefficients, float3 WaterAbsorptionCoefficients, float WaterPhaseG, float3 ColorScaleBehindWater,
+	uint ShadingModel,
+	uint SharedLocalBasisIndex,
+	uint ClearCoatBottomNormal_SharedLocalBasisIndex,
+	inout uint SharedLocalBasisTypes)
+{
+	FStrataData Out = GetInitialisedStrataData();
+
+	const float DefaultThickness = STRATA_LAYER_DEFAULT_THICKNESS_CM;
+	const float3 Zeros = float3(0, 0, 0);
+	const float3 Ones = float3(1, 1, 1);
+
+	if (ShadingModel == SHADINGMODELID_UNLIT)
+	{
+		Out = GetStrataUnlitBSDF(Emissive, Zeros);
+		Out = StrataWeight(Out, Opacity);
+	}
+	else if (ShadingModel == SHADINGMODELID_HAIR)
+	{
+		Out = GetStrataHairBSDF(
+			BaseColor,	   // BaseColor
+			Metallic,	   // Scatter
+			Specular,	   // Specular
+			Roughness,	   // Roughness
+			ClearCoat,	   // Backlit
+			Emissive,	   // EmissiveColor
+			SharedLocalBasisIndex);
+
+		// No need to take into account opacity weighting for translucent material, as the coverage is assumed to be 1
+	}
+	else if (ShadingModel == SHADINGMODELID_SINGLELAYERWATER)
+	{
+		const float3 WaterExtinction = WaterScatteringCoefficients + WaterAbsorptionCoefficients;
+		const float3 WaterAlbedo = WaterScatteringCoefficients / WaterExtinction;
+
+		Out = GetStrataSingleLayerWaterBSDF(
+			BaseColor, 				// BaseColor
+			Metallic, 				// Metallic 
+			Specular, 				// Specular
+			Roughness, 				// Roughness 
+			Emissive, 				// Emissive 
+			Opacity,				// TopMaterialOpacity
+			WaterAlbedo, 			// WaterAlbedo
+			WaterExtinction, 		// WaterExtinction
+			WaterPhaseG, 			// WaterPhaseG
+			ColorScaleBehindWater,	// ColorScaleBehindWater
+			SharedLocalBasisIndex);
+
+		// No need to take into account opacity weighting for translucent material, as the coverage is assumed to be 1
+	}
+	else
+	{
+		Out = StrataConvertLegacyMaterialDynamic(
+			BaseColor, Specular, Metallic,
+			Roughness, Anisotropy,
+			SubSurfaceColor, SubSurfaceProfileId,
+			ClearCoat, ClearCoatRoughness,
+			Emissive,
+			Opacity,
+			TransmittanceColor,
+			WaterScatteringCoefficients, WaterAbsorptionCoefficients, WaterPhaseG, ColorScaleBehindWater,
+			ShadingModel,
+			SharedLocalBasisIndex,
+			ClearCoatBottomNormal_SharedLocalBasisIndex,
+			SharedLocalBasisTypes);
+	}
+
+	return Out;
+}

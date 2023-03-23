@@ -1,0 +1,262 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+/*=============================================================================
+	DistortionAccumulatePixelShader.usf: Pixel shader for accumulating distortion offsets
+=============================================================================*/
+
+#include "Common.ush"
+
+// Reroute distortion pass uniform buffer.
+#if SHADING_PATH_MOBILE
+	#define MobileSceneTextures MobileDistortionPass.SceneTextures
+	#define DistortionParams MobileDistortionPass.DistortionParams
+#else
+	#define SceneTexturesStruct DistortionPass.SceneTextures
+	#define DistortionParams DistortionPass.DistortionParams
+#endif
+
+#include "SceneTexturesCommon.ush"
+#include "/Engine/Generated/Material.ush"
+#include "/Engine/Generated/VertexFactory.ush"
+#include "DistortionCommon.ush"
+
+// STRATA_TODO enable distortion on mobile.
+#define STRATA_ENABLED (PROJECT_STRATA && MATERIAL_IS_STRATA && !SHADING_PATH_MOBILE)
+
+#if STRATA_ENABLED
+#define STRATA_USE_ENV_BRDF_APPROX 1
+#include "/Engine/Private/Strata/StrataEvaluation.ush"
+
+#include "/Engine/Private/Strata/StrataStatisticalOperators.ush"
+#endif
+
+
+void ClipOccludedPixel(float PixelZ, float SceneZ)
+{
+#if	HAS_INVERTED_Z_BUFFER
+	float ClipDepth = PixelZ - SceneZ;
+#else
+	float ClipDepth = SceneZ - PixelZ;
+#endif
+	clip(ClipDepth);
+}
+
+/** output distortion offsets as color so they can be accumulated (via blending) */
+void Main(
+	FVertexFactoryInterpolantsVSToPS Interpolants,
+	float4	PixelPosition	: TEXCOORD6,
+	in float4 SvPosition	: SV_Position
+	OPTIONAL_IsFrontFace,
+	out float4 OutColor		: SV_Target0
+#if STRATA_ENABLED
+	,
+	out float4 OutVariance	: SV_Target1
+#endif
+	)
+{
+#if INSTANCED_STEREO
+	const uint EyeIndex = Interpolants.EyeIndex;
+	ResolvedView = ResolveView(Interpolants.EyeIndex);
+#else
+	const uint EyeIndex = 0;
+	ResolvedView = ResolveView();
+#endif
+
+	// material parameter inputs
+	FMaterialPixelParameters MaterialParameters = GetMaterialPixelParameters(Interpolants, SvPosition);
+	FPixelMaterialInputs PixelMaterialInputs;
+	CalcMaterialParameters(MaterialParameters, PixelMaterialInputs, SvPosition, bIsFrontFace);
+
+#if SHADING_PATH_MOBILE && MATERIAL_SHOULD_DISABLE_DEPTH_TEST==0
+	// Mobile specific: 
+	// distortion primtitives rendered without depth testing
+	// discard pixels that are hidden by manually comparing them to a scene depth
+	float2 BufferUV = SvPositionToBufferUV(SvPosition);
+	ClipOccludedPixel(SvPosition.z, LookupDeviceZ(BufferUV));
+#endif
+	
+	// material distortion offset
+	half3 Normal = GetMaterialNormal(MaterialParameters, PixelMaterialInputs);
+
+	// Prevent silhouettes from geometry that is in front of distortion from being seen in the distortion 
+	float2 NDC = (MaterialParameters.ScreenPosition.xy / MaterialParameters.ScreenPosition.w);
+	float2 ScreenUV = NDC * ResolvedView.ScreenPositionScaleBias.xy + ResolvedView.ScreenPositionScaleBias.wz;
+
+	// X = IOR, Y = Refraction Bias
+	float2 Refraction = GetMaterialRefraction(PixelMaterialInputs);
+
+
+#if STRATA_ENABLED
+
+
+	FStrataData StrataData = PixelMaterialInputs.FrontMaterial;
+
+	FStrataAddressing NullStrataAddressing = (FStrataAddressing)0;	// Fake unused in StrataCreateBSDFContext when using Forward inline shading
+
+	FStrataPixelHeader StrataPixelHeader = InitialiseStrataPixelHeader();
+	int l;
+	UNROLL
+	for (l = 0; l < StrataData.LayerCount; ++l)
+	{
+		StrataPixelHeader.BSDFCount += StrataData.Layers[l].BSDFCount;
+	}
+	StrataPixelHeader.SharedLocalBases = MaterialParameters.SharedLocalBases;
+
+	const float3 V = MaterialParameters.CameraVector;
+	
+	const float OpaqueBSDFThroughput = 0.0f;
+	const float FullThroughput = 1.0f;
+
+	float3 Color = 0;
+	float OutThroughput = 1.0f;
+
+	// The current way rough refraction are evaluated is
+	//  1- start with the dirac view Lobe
+	//	2- refract/scatter/transmit that Lobe though all BSDF of a layer. Compute the mean of all the resulting Lobes.
+	//  3- Use that new Lobe as input (pointing away from the surface) for the next layer until done.
+	StrataLobeStatistic WiLobe = StrataGetViewDiracLobe(V);
+
+	UNROLL
+	for (l = 0; l < StrataData.LayerCount; ++l)
+	{
+		float3 LayerThroughput = 0.0f;
+		float  LayerCoverage = 0.0f;
+
+		const bool bTopLayer = l == 0;
+		const bool bBottomLayer = l == (StrataData.LayerCount - 1);
+
+		StrataLobeStatistic AccumulatedLayerLobes = StrataGetNullLobe();
+		float AccumulatedLayerLobesWeights = 0.0f;
+
+		UNROLL
+		for (int i = 0; i < StrataData.Layers[l].BSDFCount; ++i)
+		{
+			FStrataBSDF BSDF = StrataData.Layers[l].BSDFs[i];
+
+			// Sanitize BSDF before it is used for forward shading
+			StrataSanitizeBSDF(BSDF);
+
+			BRANCH
+			if(BSDF_GETTYPE(BSDF) == STRATA_BSDF_TYPE_SLAB)
+			{
+				// We want simple volumetric only if the DMFP input is pluged in, otherwise we avoid dealing with simple volumetric
+				const bool bIsSimpleVolume = BSDF_GETHASDMFP(BSDF);
+				if (bIsSimpleVolume)
+				{
+					EnableSlabBSDFSimpleVolumetric(BSDF);
+				}
+			}
+
+			const float BSDFCoverage = BSDF.Coverage;
+
+			// Create the BSDF context
+			const float3 FakeL = float3(0, 0, 1);
+			FStrataBSDFContext StrataBSDFContext = StrataCreateBSDFContext(StrataPixelHeader, BSDF, NullStrataAddressing, V, FakeL);
+
+			FStrataEvaluateResult StrataEvaluate = StrataEvaluateBSDF(StrataBSDFContext, true); // Works to call because FakeL is nto used when computing StrataEvaluate.Throughput
+
+			// We only support rough refraction from Slab material type for now.
+			if (BSDF_GETTYPE(BSDF) == STRATA_BSDF_TYPE_SLAB)
+			{
+				// Surface directional albedo
+				const FBxDFEnergyTerms EnergyTerms = ComputeGGXSpecEnergyTerms(SLAB_ROUGHNESS(BSDF), StrataBSDFContext.SatNoV, SLAB_F0(BSDF), SLAB_F90(BSDF));
+
+				// The top layer we consider a transition air to water. For layers below, we assume they all have similar index of refraction.
+				const float InterfaceEta12 = i == 0 ? 1.0f / 1.33f : 1.0f; // STRATA_TODO Use Refraction.x in IOR mode?
+
+				// Transform input Lobe into local space w.r.t. normal
+				const float3 SavedWorldSpaceWiLobeMu = WiLobe.Mu;
+				WiLobe.Mu = float3(dot(WiLobe.Mu, StrataBSDFContext.X), dot(WiLobe.Mu, StrataBSDFContext.Y), dot(WiLobe.Mu, StrataBSDFContext.N));
+
+				// Compute the refracted Lobe according to roughness . 
+				// STRATA_TODO: take into account scattering and transmittance. Colored transmittance is taken into account already but not scattering influence on variance.
+				StrataLobeStatistic NewLobe = StrataGetRefractedLobe(WiLobe, EnergyTerms.E * OutThroughput * BSDFCoverage, SLAB_ROUGHNESS(BSDF), InterfaceEta12);
+
+				// Transform the new Lobe direction to world space and accumulate
+				NewLobe.Mu = NewLobe.Mu.x * StrataBSDFContext.X + NewLobe.Mu.y * StrataBSDFContext.Y + NewLobe.Mu.z * StrataBSDFContext.N;
+				StrataAccumulateWeightedLobe(AccumulatedLayerLobes, AccumulatedLayerLobesWeights, NewLobe);
+
+				// Restore current layer input Lobe direction to world space
+				WiLobe.Mu = SavedWorldSpaceWiLobeMu;
+			}
+			else
+			{
+				// Full roughness to make it visible as something to fix in case a type is not handled.
+				WiLobe.Sigma = 1000.0;
+			} 
+
+			LayerCoverage	+= BSDFCoverage;
+			LayerThroughput += BSDFCoverage * StrataEvaluate.Throughput;
+		}
+
+		if (AccumulatedLayerLobesWeights > 0.0f)
+		{
+			// Now compute the new input Wi Lobe from the accumulated refracted Lobe of the previous layer
+			WiLobe = StrataNormaliseLobe(AccumulatedLayerLobes, AccumulatedLayerLobesWeights);
+			// And negate the direction to make sure the previously refracted direction is the new incoming
+			WiLobe.Mu = -WiLobe.Mu;
+		}
+
+		// Take into account the non covered part for this layer and update throughput accordingly
+		LayerThroughput += (1.0 - saturate(LayerCoverage)) * FullThroughput;
+
+		// And combine this layer throughtput with he material throughput
+		OutThroughput *= LayerThroughput;
+	}
+
+	// Not write out variance (as this is more linear to accumulate than roughness)
+	OutVariance = float4(WiLobe.Sigma, 0.0f, 0.0f, 0.0f);
+
+	// Only allow clipping if roughness is close to 0.
+	const bool TryToClip = OutVariance.x < 0.01f;
+
+	// Finally, negate the direction to make sure the new incombing Lobe is the refracted Lobe we want to take into account
+	WiLobe.Mu = -WiLobe.Mu;
+
+	// FixUp to reuse the same distortion code we have for now. STRATA_TODO implement a new model?
+	half3 LobeWorldDir = normalize(TransformWorldVectorToView(WiLobe.Mu));
+	Normal = LobeWorldDir;
+
+	// Compute UV distortion
+	float2 BufferUVDistortion = ComputeBufferUVDistortion(
+		MaterialParameters, PixelMaterialInputs, ResolvedView,
+		Normal, DistortionParams, ScreenUV, Refraction, TryToClip, EyeIndex);
+
+	// Sample depth at distortion offset
+	float2 DistortBufferUV = ScreenUV + BufferUVDistortion;
+
+
+#else // STRATA_ENABLED
+
+
+	// Compute UV distortion
+	float2 BufferUVDistortion = ComputeBufferUVDistortion(
+		MaterialParameters, PixelMaterialInputs, ResolvedView,
+		MaterialParameters.WorldNormal, DistortionParams, ScreenUV, Refraction, true, EyeIndex);
+
+	// Sample depth at distortion offset
+	float2 DistortBufferUV = ScreenUV + BufferUVDistortion;
+
+
+#endif // STRATA_ENABLED
+
+
+#if SHADING_PATH_MOBILE
+	// sample depth from SceneColor.A on Mobile
+	float DistortSceneDepth = ConvertFromDeviceZ(LookupDeviceZ(DistortBufferUV)); 
+#else
+	float DistortSceneDepth = CalcSceneDepth(DistortBufferUV);
+#endif
+
+	// Post process UV distortion according to depth
+	PostProcessUVDistortion(MaterialParameters, PixelMaterialInputs, DistortSceneDepth, BufferUVDistortion, Refraction);
+
+	// store positive and negative offsets separately
+	float2 PosOffset = max(BufferUVDistortion,0);
+	float2 NegOffset = abs(min(BufferUVDistortion,0));
+
+	// output positives in R|G channels and negatives in B|A channels
+	OutColor = float4(PosOffset.x,PosOffset.y,NegOffset.x,NegOffset.y);
+}
+
+

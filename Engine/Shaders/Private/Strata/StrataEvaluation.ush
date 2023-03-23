@@ -1,0 +1,1058 @@
+// Copyright Epic Games, Inc. All Rights Reserved.
+
+#pragma once
+
+#include "Strata.ush"
+
+#include "../ParticipatingMediaCommon.ush"
+#include "../MonteCarlo.ush"
+#include "../SHCommon.ush"
+#include "../ShadingModels.ush"
+#include "../ThinFilmBSDF.ush"
+#include "../AreaLightCommon.ush"
+
+#include "../HairStrands/HairStrandsCommon.ush"
+#include "../HairStrands/HairStrandsDeepTransmittanceCommon.ush"
+#include "../HairStrands/HairStrandsDeepTransmittanceDualScattering.ush"
+
+#ifndef STRATA_FASTPATH 
+#define STRATA_FASTPATH 0
+#endif
+
+#ifndef STRATA_USE_ENV_BRDF_APPROX
+#define STRATA_USE_ENV_BRDF_APPROX 0
+#endif
+
+#ifndef STRATA_TRANSLUCENT_ENABLED
+#define STRATA_TRANSLUCENT_ENABLED 0
+#endif
+
+#ifndef STRATA_DIFFUSE_CHAN
+	#if PROJECT_STRATA_BACKCOMPATIBILITY > 0
+		#define STRATA_DIFFUSE_CHAN 0
+	#else
+		#define STRATA_DIFFUSE_CHAN 1
+	#endif
+#endif
+
+#ifndef STRATA_SSS_TRANSMISSION
+#define STRATA_SSS_TRANSMISSION 0
+#endif
+
+// STRATA_TODO put in a common file
+// Point lobe in off-specular peak direction
+float3 StrataGetOffSpecularPeakReflectionDir(float3 Normal, float3 ReflectionVector, float Roughness)
+{
+	float a = Square(Roughness);
+	return lerp(Normal, ReflectionVector, (1 - a) * (sqrt(1 - a) + a));
+}
+
+// When haziness is used, both lobes take equal part in the blending. Only roughness changes.
+#define SPECULAR_HAZINESS_WEIGHT 0.5f
+
+
+
+///////////////////////////////////////////////////////////////////////////////
+// BSDF evaluate and sampling
+
+struct FStrataBSDFContext
+{
+	FStrataBSDF BSDF;
+
+	float3 N;
+	float3 X;
+	float3 Y;
+	float3 V;
+	float3 R;
+	float3 H;
+
+	float3 L;	// There to initialise the BxDFContext. Only used by StrataEvaluateBSDF, not by StrataImportanceSampleBSDF or StrataEvaluateForEnvLight
+
+	BxDFContext Context;
+	float SatNoL;
+	float SatNoV;
+
+	float3x3 TangentBasis;
+	float3 TangentV;
+	float3 TangentH;
+};
+
+float StrataGetBSDFRoughness(in FStrataBSDF BSDF)
+{
+	float R = 0;
+	const uint BSDFType = BSDF_GETTYPE(BSDF);
+	switch (BSDFType)
+	{
+	case STRATA_BSDF_TYPE_SLAB:
+	{
+		R = SLAB_ROUGHNESS(BSDF);
+		break;
+	}
+	case STRATA_BSDF_TYPE_HAIR:
+	{
+		R = HAIR_ROUGHNESS(BSDF);
+		break;
+	}
+	case STRATA_BSDF_TYPE_SINGLELAYERWATER:
+	{
+		R = SLW_ROUGHNESS(BSDF);
+		break;
+	}
+	}
+	return R;
+}
+
+FStrataBSDFContext StrataCreateBSDFContext(float3x3 TangentBasis, FStrataBSDF BSDF, float3 V, float3 L, bool bHasValidL=true)
+{
+	FStrataBSDFContext BSDFContext = (FStrataBSDFContext)0;
+
+	BSDFContext.BSDF = BSDF;
+
+	BSDFContext.X = TangentBasis[0]; 
+	BSDFContext.Y = TangentBasis[1];
+	BSDFContext.N = TangentBasis[2]; 
+	BSDFContext.V = V;
+	BSDFContext.R = 2 * dot(BSDFContext.V, BSDFContext.N) * BSDFContext.N - BSDFContext.V;
+	BSDFContext.L = bHasValidL ? L : BSDFContext.R;
+	BSDFContext.H = normalize(BSDFContext.V + BSDFContext.L);
+
+	BSDFContext.Context = (BxDFContext)0;
+	if (BSDF_GETHASANISOTROPY(BSDF) != 0)
+	{
+		Init(BSDFContext.Context, BSDFContext.N, BSDFContext.X, BSDFContext.Y, BSDFContext.V, BSDFContext.L);
+	}
+	else
+	{
+		Init(BSDFContext.Context, BSDFContext.N, BSDFContext.V, BSDFContext.L);
+	}
+	BSDFContext.TangentBasis = float3x3(BSDFContext.X, BSDFContext.Y, BSDFContext.N);
+
+	BSDFContext.TangentV = mul(BSDFContext.TangentBasis, BSDFContext.V);
+	BSDFContext.TangentH = mul(BSDFContext.TangentBasis, BSDFContext.H);
+
+	BSDFContext.SatNoL = saturate(BSDFContext.Context.NoL);
+	BSDFContext.SatNoV = saturate(BSDFContext.Context.NoV);
+
+	return BSDFContext;
+}
+
+FStrataBSDFContext StrataCreateBSDFContext(FStrataPixelHeader StrataPixelHeader, FStrataBSDF BSDF, const FStrataAddressing StrataAddressing, float3 V)
+{
+	float3 UnusedL = float3(0, 0, 1);
+	float3x3 TangentBasis = StrataGetBSDFSharedBasis(StrataPixelHeader, BSDF, StrataAddressing);
+	return StrataCreateBSDFContext(TangentBasis, BSDF, V, UnusedL, false);
+}
+
+FStrataBSDFContext StrataCreateBSDFContext(FStrataPixelHeader StrataPixelHeader, FStrataBSDF BSDF, const FStrataAddressing StrataAddressing, float3 V, float3 L)
+{
+	float3x3 TangentBasis = StrataGetBSDFSharedBasis(StrataPixelHeader, BSDF, StrataAddressing);
+	return StrataCreateBSDFContext(TangentBasis, BSDF, V, L, true);
+}
+
+void StrataUpdateBSDFContext(inout FStrataBSDFContext BSDFContext, float3 NewL)
+{
+	// Update all the data related to L
+	BSDFContext.L = NewL;
+	Init(BSDFContext.Context, BSDFContext.N, BSDFContext.V, BSDFContext.L);
+	BSDFContext.H = normalize(BSDFContext.V + BSDFContext.L);
+	BSDFContext.R = 2 * dot(BSDFContext.V, BSDFContext.N) * BSDFContext.N - BSDFContext.V;
+	BSDFContext.TangentH = mul(BSDFContext.H, BSDFContext.TangentBasis);
+	BSDFContext.SatNoL = saturate(BSDFContext.Context.NoL);
+	BSDFContext.SatNoV = saturate(BSDFContext.Context.NoV);
+}
+
+struct FStrataEvaluateResult
+{
+	float3 IntegratedDiffuseValue;
+	float3 IntegratedSpecularValue;
+
+	// Use for forward rendering using translucent lighting volume or per vertex lighting
+	float3 DiffuseColor;
+
+	float3 EmissivePathValue;
+
+	float3 DiffusePathValue;
+	float3 SpecularPathValue;
+	float3 SpecularHazePathValue;
+	float3 TransmissionPathValue;
+	float3 ThinTransmissionPathValue;
+
+	// The following probabilities are part of the pdf to work correctly with a monter carlo based integrator and as expected are not applied on the xxxPathValue.
+	// So PathProbability should be applied on PathValue in the rasteriser to recover the correct balance.
+	float SpecularPathProbability;
+	float SpecularHazePathProbability;
+
+	float  DiffusePDF;
+	float  SpecularPDF;
+	float  SpecularHazePDF;
+	float  TransmissionPDF;
+	float  ThinTransmissionPathPDF;
+
+	float3 Throughput;					// Throughput to the next layer
+	bool   bSubsurface;					// True if we need to separate the subsurface light contribution for the screen space diffusion process.
+	bool   bApplyProjectedSolidAngle;	// True if the Saturate(NoL) factor should be applied or not over the value of the BSDF
+};
+
+// PUNCTUAL corresponds to an evaluation (from in & out directions).
+// When CAPSULE or RECT are used, special techniques are used to integrate specular lighting form those area light types.
+#define INTEGRATION_PUNCTUAL_LIGHT		0
+#define INTEGRATION_AREA_LIGHT_CAPSULE	1
+#define INTEGRATION_AREA_LIGHT_RECT		2
+
+FStrataEvaluateResult StrataEvaluateBSDFCommon(FStrataBSDFContext BSDFContext, FShadowTerms ShadowTerms, FAreaLightIntegrateContext AreaLightContext, int IntegrationType, bool bForceFullyRough, bool bRoughDiffuseEnabled)
+{
+	FStrataEvaluateResult Sample = (FStrataEvaluateResult)0;
+
+	const float OpaqueBSDFThroughput = 0.0f;
+
+	const uint BSDFType = BSDF_GETTYPE(BSDFContext.BSDF);
+	switch (BSDFType)
+	{
+		case STRATA_BSDF_TYPE_SLAB:
+		{
+			float3 DiffuseColor			= SLAB_DIFFUSEALBEDO(BSDFContext.BSDF);
+			float3 F0					= SLAB_F0(BSDFContext.BSDF);
+			float3 F90					= SLAB_F90(BSDFContext.BSDF);
+			const float SafeRoughness	= MakeRoughnessSafe(SLAB_ROUGHNESS(BSDFContext.BSDF));
+		#if STRATA_FASTPATH==0
+			float HazeSafeRoughness		= SafeRoughness;
+		#endif
+			const bool bHasSubsurface	= BSDF_GETHASSSS(BSDFContext.BSDF) > 0;
+			const bool bHasAnisotropy = BSDF_GETHASANISOTROPY(BSDFContext.BSDF);
+			const bool bHaziness = BSDF_GETHASHAZINESS(BSDFContext.BSDF);
+
+			if (bForceFullyRough)
+			{
+				// When rendering reflection captures, the BSDF roughness has already been forced to 1 using View.RoughnessOverrideParameter (see StrataSanitizeBSDF).
+				EnvBRDFApproxFullyRough(DiffuseColor, F0, F90);
+			}
+
+			float Alpha2 = Pow4(SafeRoughness);
+
+			float NoV, VoH, NoH;
+			BRANCH
+			if (bHasAnisotropy)
+			{
+				Init(BSDFContext.Context, BSDFContext.N, BSDFContext.X, BSDFContext.Y, BSDFContext.V, AreaLightContext.L);
+
+				NoV = BSDFContext.Context.NoV;
+				VoH = BSDFContext.Context.VoH;
+				NoH = BSDFContext.Context.NoH;
+			}
+			else
+			{
+				Init(BSDFContext.Context, BSDFContext.N, BSDFContext.V, AreaLightContext.L);
+
+				NoV = BSDFContext.Context.NoV;
+				VoH = BSDFContext.Context.VoH;
+				NoH = BSDFContext.Context.NoH;
+
+				SphereMaxNoH(BSDFContext.Context, AreaLightContext.AreaLight.SphereSinAlpha, true);
+			}
+			BSDFContext.Context.NoV = saturate(abs(BSDFContext.Context.NoV) + 1e-5);
+
+			////
+			//// Evaluate the diffuse component.
+			////
+
+			if (STRATA_DIFFUSE_CHAN && bRoughDiffuseEnabled)
+			{
+				// If the specular layer is anisotropic, the diffuse takes the 'main' roughness value rather than the tangent/bitangent value
+				Sample.DiffusePathValue = Diffuse_Chan(DiffuseColor, Alpha2, NoV, AreaLightContext.NoL, VoH, NoH, GetAreaLightDiffuseMicroReflWeight(AreaLightContext.AreaLight));
+			}
+			else
+			{
+				Sample.DiffusePathValue = Diffuse_Lambert(DiffuseColor);
+			}
+			Sample.IntegratedDiffuseValue += ShadowTerms.SurfaceShadow * AreaLightContext.NoL * Sample.DiffusePathValue * AreaLightContext.Falloff * AreaLightContext.AreaLight.FalloffColor;
+			Sample.DiffuseColor		= DiffuseColor;
+			Sample.DiffusePDF		= BSDFContext.SatNoL / PI;
+			Sample.bSubsurface		= bHasSubsurface;
+
+
+			//
+			// Apply energy conservation on the diffuse component
+			// If the specular layer is anisotropic, the energy term is computed onto the 'main' roughness [Kulla 2019]
+			//
+			float3 MSScale = 1;
+			float3 HazeMSScale = 1;
+			float3 DirectionalAlbedo_SpecularTransmission = 1.0f;
+			{
+				{
+					FBxDFEnergyTerms EnergyTerms = ComputeGGXSpecEnergyTerms(SafeRoughness, BSDFContext.Context.NoV, F0, F90);
+					DirectionalAlbedo_SpecularTransmission = ComputeEnergyPreservation(EnergyTerms);
+					MSScale = ComputeEnergyConservation(EnergyTerms);
+				}
+
+			#if STRATA_FASTPATH==0
+				if (bHaziness)
+				{
+					HazeSafeRoughness = ComputeHazyLobeRoughness(SafeRoughness, SLAB_HAZINESS(BSDFContext.BSDF));
+					FBxDFEnergyTerms EnergyTerms = ComputeGGXSpecEnergyTerms(HazeSafeRoughness, BSDFContext.Context.NoV, F0, F90);
+					HazeMSScale = ComputeEnergyConservation(EnergyTerms);
+				}
+			#endif
+
+				// We remove the Chan model baked transmittance specular directional albedo assuming F=0.04.
+				// Then we apply the transmittance according to the current surface setup.
+				// To make this a safe operation:
+				//	- We clamp SpecularTChan to a threshold to avoid div by 0 when the material is a metal. 
+				//	- When the material tends to be metal, DirectionalAlbedo_SpecularTransmission will naturally tend to be 0
+				if (STRATA_DIFFUSE_CHAN > 0 && bRoughDiffuseEnabled)
+				{
+					const float ChanF0 = 0.04;
+					FBxDFEnergyTerms EnergyTerms = ComputeGGXSpecEnergyTerms(SafeRoughness, BSDFContext.Context.NoV, ChanF0, 1.0f);
+					const float3 SpecularTransmitionChanF0ToMaterialF0 = DirectionalAlbedo_SpecularTransmission / max(1e-8f, ComputeEnergyPreservation(EnergyTerms));
+					Sample.DiffusePathValue *= SpecularTransmitionChanF0ToMaterialF0;
+					Sample.IntegratedDiffuseValue *= SpecularTransmitionChanF0ToMaterialF0;
+				}
+				else
+				{
+					Sample.DiffusePathValue *= DirectionalAlbedo_SpecularTransmission;
+					Sample.IntegratedDiffuseValue *= DirectionalAlbedo_SpecularTransmission;
+				}
+			}
+
+
+			////
+			//// Evaluate the specular component.
+			//// This takes into account multiple scattering, thin film interference, micro occlusion.
+			//// Note: anisotropy completely disables area integrations. Lights fall back to punctual.
+			////
+
+			float3 RectLightSpec = 0;
+			float3 RectLightSpecHaze = 0;
+			float D = 0;
+			float Vis = 0;
+			float PDF = 0;
+			float HazeD = 0;
+			float HazeVis = 0;
+			float HazePDF = 0;
+			const bool bIsRectLight = IntegrationType == INTEGRATION_AREA_LIGHT_RECT;
+
+			#if STRATA_FASTPATH==0
+			BRANCH
+			if (bHasAnisotropy)
+			{
+				// Generalized microfacet specular
+				{
+					float2 Alpha = 0;
+					GetAnisotropicRoughness(SafeRoughness, SLAB_ANISOTROPY(BSDFContext.BSDF), Alpha.x, Alpha.y);
+
+					D   = D_GGXaniso(Alpha.x, Alpha.y, BSDFContext.Context.NoH, BSDFContext.Context.XoH, BSDFContext.Context.YoH);
+					Vis = Vis_SmithJointAniso(Alpha.x, Alpha.y, BSDFContext.Context.NoV, BSDFContext.Context.NoL, BSDFContext.Context.XoV, BSDFContext.Context.XoL, BSDFContext.Context.YoV, BSDFContext.Context.YoL);
+					const float H_PDF = VisibleGGXPDF_aniso(BSDFContext.TangentV, BSDFContext.TangentH, Alpha);
+					PDF = RayPDFToReflectionRayPDF(BSDFContext.Context.VoH, H_PDF);
+				}
+
+				if (bHaziness)
+				{
+					float2 HazeAlpha = 0;
+					GetAnisotropicRoughness(HazeSafeRoughness, SLAB_ANISOTROPY(BSDFContext.BSDF), HazeAlpha.x, HazeAlpha.y);
+
+					HazeD   = D_GGXaniso(HazeAlpha.x, HazeAlpha.y, BSDFContext.Context.NoH, BSDFContext.Context.XoH, BSDFContext.Context.YoH);
+					HazeVis = Vis_SmithJointAniso(HazeAlpha.x, HazeAlpha.y, BSDFContext.Context.NoV, BSDFContext.Context.NoL, BSDFContext.Context.XoV, BSDFContext.Context.XoL, BSDFContext.Context.YoV, BSDFContext.Context.YoL);
+					const float H_PDF = VisibleGGXPDF_aniso(BSDFContext.TangentV, BSDFContext.TangentH, HazeAlpha);
+					HazePDF = RayPDFToReflectionRayPDF(BSDFContext.Context.VoH, H_PDF);
+				}
+			}
+			else
+			#endif
+			{
+				if (bIsRectLight)
+				{
+					// In this case, we set D to 1 and Vis will contain the area light / GGX integration
+					{
+						RectLightSpec = RectGGXApproxLTC(SafeRoughness, F0, BSDFContext.N, BSDFContext.V, AreaLightContext.AreaLight.Rect, AreaLightContext.AreaLight.Texture);
+
+						const float H_PDF = VisibleGGXPDF(BSDFContext.TangentV, BSDFContext.TangentH, Alpha2);
+						PDF = RayPDFToReflectionRayPDF(BSDFContext.Context.VoH, H_PDF);
+					}
+					
+					#if STRATA_FASTPATH==0
+					if (bHaziness)
+					{
+						RectLightSpecHaze = RectGGXApproxLTC(HazeSafeRoughness, F0, BSDFContext.N, BSDFContext.V, AreaLightContext.AreaLight.Rect, AreaLightContext.AreaLight.Texture);
+					
+						const float H_PDF = VisibleGGXPDF(BSDFContext.TangentV, BSDFContext.TangentH, Pow4(HazeSafeRoughness));
+						HazePDF = RayPDFToReflectionRayPDF(BSDFContext.Context.VoH, H_PDF);
+					}
+					#endif
+				}
+				else
+				{
+					// Special override for roughness for supporting area light integrator with Sphere/Tube/Disk light, which modifies/increase roughness.
+
+					// Generalized microfacet specular
+					{
+						float Alpha2Spec = Alpha2;
+						if(IntegrationType == INTEGRATION_PUNCTUAL_LIGHT)
+						{
+							D = D_GGX(Alpha2Spec, BSDFContext.Context.NoH);
+						}
+						else
+						{
+							float Energy = EnergyNormalization(Alpha2Spec, BSDFContext.Context.VoH, AreaLightContext.AreaLight);
+							D = D_GGX(Alpha2Spec, BSDFContext.Context.NoH) * Energy;
+						}
+						// STRATA_TODO Should we use Vis_SmithJointApprox here?
+						Vis = Vis_SmithJoint(Alpha2Spec, BSDFContext.Context.NoV, AreaLightContext.NoL);
+						const float H_PDF = VisibleGGXPDF(BSDFContext.TangentV, BSDFContext.TangentH, Alpha2Spec);
+						PDF = RayPDFToReflectionRayPDF(BSDFContext.Context.VoH, H_PDF);
+					}
+
+					#if STRATA_FASTPATH==0
+					if (bHaziness)
+					{
+						float Alpha2SpecHaze = Pow4(HazeSafeRoughness);
+						if (IntegrationType == INTEGRATION_PUNCTUAL_LIGHT)
+						{
+							D = D_GGX(Alpha2SpecHaze, BSDFContext.Context.NoH);
+						}
+						else
+						{
+							float Energy = EnergyNormalization(Alpha2SpecHaze, BSDFContext.Context.VoH, AreaLightContext.AreaLight);
+							D = D_GGX(Alpha2SpecHaze, BSDFContext.Context.NoH) * Energy;
+						}
+						// STRATA_TODO Should we use Vis_SmithJointApprox here?
+						HazeVis = Vis_SmithJoint(Alpha2SpecHaze, BSDFContext.Context.NoV, AreaLightContext.NoL);
+						const float H_PDF = VisibleGGXPDF(BSDFContext.TangentV, BSDFContext.TangentH, Alpha2SpecHaze);
+						HazePDF = RayPDFToReflectionRayPDF(BSDFContext.Context.VoH, H_PDF);
+					}
+					#endif
+				}
+			}
+
+			float3 FresnelTerm = 0;
+			const float SpecularMicroOcclusion = ComputeSpecularMicroOcclusion(F0.g);
+			#if STRATA_FASTPATH==0
+			const bool bHasThinFilm = BSDF_GETHASTHINFILM(BSDFContext.BSDF);
+			BRANCH
+			if (bHasThinFilm)
+			{
+				float ThinFilmIOR = SLAB_THINFILM_IOR(BSDFContext.BSDF);
+				float ThinFilmThickness = SLAB_THINFILM_THICKNESS(BSDFContext.BSDF);
+				//  We do not use the MRP NoL here for thin interference.
+				FresnelTerm = SpecularMicroOcclusion * F_ThinFilm(BSDFContext.Context.NoV, BSDFContext.Context.NoL, BSDFContext.Context.VoH, F0, F90, ThinFilmIOR, ThinFilmThickness);
+			}
+			else
+			#endif
+			{
+				FresnelTerm = SpecularMicroOcclusion * F_Schlick(F0, F90, BSDFContext.Context.VoH);
+			}
+
+			Sample.SpecularPathProbability		= bHaziness	? (1.0f - SPECULAR_HAZINESS_WEIGHT) : 1.0f;
+			Sample.SpecularHazePathProbability	= bHaziness	? SPECULAR_HAZINESS_WEIGHT			: 0.0f;
+
+			Sample.SpecularPDF				= PDF * Sample.SpecularPathProbability;
+			Sample.SpecularHazePDF			= HazePDF * Sample.SpecularHazePathProbability;
+
+			if (bIsRectLight)
+			{
+				// Rect light should not evaluate the Fresnel term which is already part of the LTC integration function.
+				// So we simply disable the Fresnel factor in this case. That does mean that will lose thin film interference on Rect lights.
+
+				Sample.SpecularPathValue     = RectLightSpec     * MSScale     * SpecularMicroOcclusion;
+				Sample.SpecularHazePathValue = RectLightSpecHaze * HazeMSScale * SpecularMicroOcclusion;
+
+				Sample.IntegratedSpecularValue = ShadowTerms.SurfaceShadow * /* AreaLightContext.NoL and falloff is part of the LTC integration already */
+					(Sample.SpecularPathValue * Sample.SpecularPathProbability + Sample.SpecularHazePathValue * Sample.SpecularHazePathProbability);
+			}
+			else
+			{
+				Sample.SpecularPathValue     = D     * Vis     * FresnelTerm * MSScale;
+				Sample.SpecularHazePathValue = HazeD * HazeVis * FresnelTerm * HazeMSScale;
+
+				Sample.IntegratedSpecularValue += ShadowTerms.SurfaceShadow * AreaLightContext.NoL * AreaLightContext.AreaLight.FalloffColor * AreaLightContext.Falloff *
+					(Sample.SpecularPathValue * Sample.SpecularPathProbability + Sample.SpecularHazePathValue * Sample.SpecularHazePathProbability);
+			}
+
+			////
+			//// Evaluate emissive and set the sample throughput (transmittance to next layer) corresponding to an opaque slab of matter.
+			////
+			
+			// we do not need to add emissive for the BRDF TotalSpec or TotalDiff values as this is handled separately
+			Sample.EmissivePathValue = BSDF_GETEMISSIVE(BSDFContext.BSDF);
+
+			Sample.Throughput = OpaqueBSDFThroughput;
+
+			////
+			//// Evaluate cloth fuzz layered on top of the slab.
+			////
+
+			#if STRATA_FASTPATH==0
+			BRANCH
+			if (BSDF_GETHASFUZZ(BSDFContext.BSDF))
+			{
+				const float Fuzz = SLAB_FUZZ_AMOUNT(BSDFContext.BSDF);
+				const float3 FuzzF0  = SLAB_FUZZ_COLOR(BSDFContext.BSDF);
+				
+				FBxDFEnergyTerms EnergyTerms = ComputeClothEnergyTerms(SafeRoughness, BSDFContext.Context.NoV, F0, F90);
+
+				// Generalized inverse microfacet specular
+				float ClothD   = D_InvGGX(Alpha2, BSDFContext.Context.NoH);
+				float ClothVis = Vis_Cloth(BSDFContext.Context.NoV, AreaLightContext.NoL);
+				float3 ClothF  = F_Schlick(FuzzF0, BSDFContext.Context.VoH);
+				float3 ClothSpecularPathValue = ClothD * ClothVis * ClothF * ComputeEnergyConservation(EnergyTerms);
+
+				// Area light are not supported by the cloth BRDF
+				float3 ClothIntegratedSpecularValue = ShadowTerms.SurfaceShadow * AreaLightContext.NoL * AreaLightContext.AreaLight.FalloffColor * AreaLightContext.Falloff * ClothSpecularPathValue;
+				
+				Sample.SpecularPathValue		= lerp(Sample.SpecularPathValue,		ClothSpecularPathValue,			Fuzz);
+				Sample.IntegratedSpecularValue	= lerp(Sample.IntegratedSpecularValue,	ClothIntegratedSpecularValue,	Fuzz);
+
+				// This is not good. We should really have a separate PDF for cloth it self associated with a probability.
+				// We should also output probability to sample cloth, diffuse, secular, etc.
+				// We will revisit when the path tracer is getting up with Strata.
+				Sample.SpecularPDF		 = lerp(Sample.SpecularPDF,			BSDFContext.SatNoV / PI,	Fuzz); // Per "Production Friendly Microfacet Sheen BRDF", hemispherical sampling give good result as the roughness is usually high.
+				
+				// Fuzz does not affect throughput.
+
+				if (bHaziness)
+				{
+					Sample.SpecularHazePathValue= lerp(Sample.SpecularHazePathValue,	ClothSpecularPathValue,		Fuzz);
+					Sample.SpecularHazePDF		= lerp(Sample.SpecularHazePDF,			BSDFContext.SatNoV / PI,	Fuzz);
+				}
+				break;
+			}
+			#endif
+
+			////
+			//// Evaluate transmitted light through a mesh due to sub surface scattering.
+			////
+
+			#if STRATA_FASTPATH==0 && STRATA_SSS_TRANSMISSION
+			const bool bHasProfile = BSDF_GETHASSSSPROFILE(BSDFContext.BSDF);
+			if (BSDF_GETHASSSS(BSDFContext.BSDF))
+			{
+				const float ThicknessInCm = DecodeThickness(ShadowTerms.TransmissionThickness) * SSSS_MAX_TRANSMISSION_PROFILE_DISTANCE;
+
+				float OneOverIOR = 1.0f;
+				float PhaseFunctionAnisotropy = 0.0f;
+				float3 TransmissionThroughput = 1.0f;
+				if (bHasProfile)
+				{
+					const uint ProfileId = StrataSubsurfaceProfileIdTo8bits(SLAB_SSSPROFILEID(BSDFContext.BSDF)); // TODO move this into the PackStrataOut( function, to avoid this decode here
+					const FTransmissionProfileParams TransmissionParams = GetTransmissionProfileParams(ProfileId);
+					TransmissionThroughput	= GetTransmissionProfile(ProfileId, ThicknessInCm).rgb;
+					PhaseFunctionAnisotropy = TransmissionParams.ScatteringDistribution;
+					OneOverIOR				= TransmissionParams.OneOverIOR;
+
+				}
+				else
+				{
+					const float3 SubsurfaceAlebdo = SLAB_DIFFUSEALBEDO(BSDFContext.BSDF);
+					const float3 MeanFreePathInCm = SLAB_SSSDMFP(BSDFContext.BSDF);
+					TransmissionThroughput	= GetBurleyTransmissionProfile(SubsurfaceAlebdo, MeanFreePathInCm, ThicknessInCm);
+					PhaseFunctionAnisotropy = 0.93f; // STRATA_TODO: expose phase function eccentricity. For now, forward scattering matching default SSS profile value
+					OneOverIOR				= 1.f / DielectricF0ToIor(F0.y);
+				}
+
+				const float3 RefracV = refract(BSDFContext.V, -BSDFContext.N, OneOverIOR);
+				const float PhaseFunction = ApproximateHG(dot(-BSDFContext.L, RefracV), PhaseFunctionAnisotropy);
+
+				Sample.Throughput				= TransmissionThroughput * PhaseFunction;
+				Sample.TransmissionPathValue	= TransmissionThroughput * PhaseFunction;
+				Sample.TransmissionPDF			= 1.0f / (4.0f * PI);		// STRATA_TODO this currently match the uniform sphere sampling from StrataImportanceSampleBSDF
+
+				Sample.IntegratedDiffuseValue += ShadowTerms.TransmissionShadow * Sample.TransmissionPathValue * AreaLightContext.Falloff * AreaLightContext.AreaLight.FalloffColor;
+			}
+			#endif
+
+			////
+			//// Evaluate Thin light transmittance BSDF, transmitting light on the other side of thin surfaces.
+			////
+
+			#if STRATA_FASTPATH==0
+			BRANCH
+			if (BSDF_GETISTHIN(BSDFContext.BSDF))
+			{
+				FParticipatingMedia PM = StrataSlabCreateParticipatingMedia(DiffuseColor, SLAB_SSSDMFP(BSDFContext.BSDF));
+				const float BackFaceNoL = -BSDFContext.Context.NoL;
+				const float BackFaceNoLSat = saturate(BackFaceNoL);
+
+				// We consider single scattering and perpendicular to the surface light transmittance.
+				// Using BackFaceNoL instead of 1 for TransmittanceNoL would be more correct but it gives some high frequency details looking weird without multiple scattering.
+				const float TransmittanceNoL = 1.0f;	
+				const float3 SlabTransmittance = IsotropicMediumSlabTransmittance(PM, STRATA_SIMPLEVOLUME_THICKNESS_M, TransmittanceNoL);
+
+				// We recover the transmitted luminance from as the back face Lambert affected by the transmittance.
+				// The MFP is specified on the slab node and then transmittance recoved from it.
+				// We assume the back face diffuse albedo is white=1 and no diffusion happens at this stage.
+				const float3 BackFaceWhiteDiffuseColor = float3(1.0f, 1.0f, 1.0f);
+
+				// The diffuse is attenuated by the slab transmittance and the GGX interface SpecularTransmission.
+				Sample.ThinTransmissionPathValue = Diffuse_Lambert(BackFaceWhiteDiffuseColor) * SlabTransmittance * DirectionalAlbedo_SpecularTransmission;
+				Sample.ThinTransmissionPathPDF = BackFaceNoLSat / PI;
+
+				// At this stage, Sample.bSubsurface should have been setup correctly already if SSS is enabled with two-sided lighting.
+
+				Sample.IntegratedDiffuseValue += ShadowTerms.TransmissionShadow * Sample.ThinTransmissionPathValue * BackFaceNoLSat * AreaLightContext.Falloff * AreaLightContext.AreaLight.FalloffColor;
+			}
+			#endif
+
+			////
+			//// Evaluate a layer of participating media: scattering and transmittance.
+			//// This is used for optically thin translucent objects, or non-bottom layer of a material.
+			////
+
+			#if STRATA_FASTPATH==0
+			BRANCH
+			if (BSDF_GETISSIMPLEVOLUME(BSDFContext.BSDF))
+			{
+				FParticipatingMedia PM = StrataSlabCreateParticipatingMedia(DiffuseColor, SLAB_SSSDMFP(BSDFContext.BSDF));
+				const float DiffuseToVolumeBlend = StrataSlabDiffuseToVolumeBlend(PM);
+				const float3 SlabDirectionalAlbedo = IsotropicMediumSlabPunctualDirectionalAlbedo(PM);
+				const float3 SlabTransmittance = IsotropicMediumSlabTransmittance(PM, STRATA_SIMPLEVOLUME_THICKNESS_M, BSDFContext.Context.NoV);
+
+				const float Phase = IsotropicPhase();
+
+				// Now lerp between the optically thin and optically thin medium models.
+				// The diffuse and throughput account for the GGX interface SpecularTransmission.
+				Sample.DiffusePathValue = lerp(Sample.DiffusePathValue,		SlabDirectionalAlbedo * DirectionalAlbedo_SpecularTransmission,		DiffuseToVolumeBlend);
+				Sample.DiffusePDF		= lerp(Sample.DiffusePDF,			Phase,																DiffuseToVolumeBlend);
+				Sample.Throughput		= lerp(Sample.Throughput,			SlabTransmittance     * DirectionalAlbedo_SpecularTransmission,		DiffuseToVolumeBlend);
+
+				Sample.bSubsurface = false;	// It should already be the case because Enforce in this case because BSDF_GETHASSSS should be false when BSDF_GETISSIMPLEVOLUME is true
+
+				Sample.IntegratedDiffuseValue = lerp(
+					Sample.IntegratedDiffuseValue, 
+					ShadowTerms.SurfaceShadow * AreaLightContext.NoL * SlabDirectionalAlbedo * DirectionalAlbedo_SpecularTransmission * AreaLightContext.Falloff * AreaLightContext.AreaLight.FalloffColor,
+					DiffuseToVolumeBlend);
+				Sample.DiffuseColor		= SlabDirectionalAlbedo;
+			}
+			#endif
+
+			break;
+		}
+
+		#if STRATA_FASTPATH==0
+		case STRATA_BSDF_TYPE_HAIR:
+		{
+			FGBufferData GBuffer	= (FGBufferData)0;
+			GBuffer.BaseColor		= HAIR_BASECOLOR(BSDFContext.BSDF);
+			GBuffer.Specular		= HAIR_SPECULAR(BSDFContext.BSDF);
+			GBuffer.Roughness		= HAIR_ROUGHNESS(BSDFContext.BSDF);
+			GBuffer.Metallic		= HAIR_SCATTER(BSDFContext.BSDF);
+			GBuffer.CustomData.z	= HAIR_BACKLIT(BSDFContext.BSDF);
+			GBuffer.ShadingModelID	= SHADINGMODELID_HAIR;
+			GBuffer.WorldNormal		= BSDFContext.N;
+
+			FHairTransmittanceData HairTransmittance = InitHairTransmittanceData();
+			if (HAIR_COMPLEXTRANSMITTANCE(BSDFContext.BSDF))
+			{
+				HairTransmittance = EvaluateDualScattering(GBuffer.BaseColor, BSDFContext.N, GBuffer.Roughness, BSDFContext.V, BSDFContext.L);
+				HairTransmittance.OpaqueVisibility = ShadowTerms.SurfaceShadow;
+			}
+
+			float BacklitEnabled = 1.0f;
+			float Area = 0.0f;
+			uint2 Random = uint2(0, 0);
+			Sample.SpecularPathValue	= HairShading(GBuffer, BSDFContext.L, BSDFContext.V, BSDFContext.N, ShadowTerms.TransmissionShadow, HairTransmittance, BacklitEnabled, Area, Random);
+			Sample.SpecularPDF			= 1.0f / (4.0f * PI);		// STRATA_TODO this currently match the uniform sphere sampling from StrataImportanceSampleBSDF
+			Sample.Throughput			= OpaqueBSDFThroughput; 
+			Sample.IntegratedSpecularValue = ShadowTerms.TransmissionShadow * AreaLightContext.AreaLight.FalloffColor * AreaLightContext.Falloff * Sample.SpecularPathValue;
+		}
+		break;
+
+		//case STRATA_BSDF_TYPE_VOLUMETRICFOGCLOUD:
+		//case STRATA_BSDF_TYPE_UNLIT:
+		//case STRATA_BSDF_TYPE_SINGLELAYERWATER:
+		//Nothing to do in this case because these BSDF are evaluated in other specialised passes.
+		//break;
+		#endif
+	}
+
+	return Sample;
+}
+
+FStrataEvaluateResult StrataEvaluateBSDF(FStrataBSDFContext BSDFContext, bool bRoughDiffuseEnabled)
+{
+	FShadowTerms IdentityShadow = { 1, 1, 1, InitHairTransmittanceData() };
+	FAreaLightIntegrateContext DummyAreaLightContext = InitAreaLightIntegrateContext();
+	DummyAreaLightContext.L = BSDFContext.L;
+	DummyAreaLightContext.NoL = BSDFContext.Context.NoL;
+	DummyAreaLightContext.Falloff = 1;
+	const bool bForceFullyRough = false;
+	return StrataEvaluateBSDFCommon(BSDFContext, IdentityShadow, DummyAreaLightContext, INTEGRATION_PUNCTUAL_LIGHT, bForceFullyRough, bRoughDiffuseEnabled);
+}
+
+FStrataEvaluateResult StrataIntegrateBSDF(FStrataBSDFContext BSDFContext, FShadowTerms Shadow, FAreaLightIntegrateContext AreaLightContext, bool bForceFullyRough, bool bRoughDiffuseEnabled)
+{
+	BRANCH
+	if (IsAreaLight(AreaLightContext.AreaLight))
+	{
+		BRANCH
+		if(IsRectLight(AreaLightContext.AreaLight))
+		{
+			return StrataEvaluateBSDFCommon(BSDFContext, Shadow, AreaLightContext, INTEGRATION_AREA_LIGHT_RECT, bForceFullyRough, bRoughDiffuseEnabled);
+		}
+		else
+		{
+			return StrataEvaluateBSDFCommon(BSDFContext, Shadow, AreaLightContext, INTEGRATION_AREA_LIGHT_CAPSULE, bForceFullyRough, bRoughDiffuseEnabled);
+		}
+	}
+
+	return StrataEvaluateBSDFCommon(BSDFContext, Shadow, AreaLightContext, INTEGRATION_PUNCTUAL_LIGHT, bForceFullyRough, bRoughDiffuseEnabled);
+}
+
+struct FStrataImportanceSampleResult
+{
+	float3 SpecularDirection;
+	float  SpecularPDF;
+
+	float3 DiffuseDirection;
+	float  DiffusePDF;
+};
+
+/**
+ * Importance sample a Strata BSDF
+ * BSDF: the strata BSDF to importance sample
+ * E: two random numbers
+ * CameraVector: vector from the camera to the considered direction (not V)
+ */
+FStrataImportanceSampleResult StrataImportanceSampleBSDF(FStrataBSDFContext BSDFContext, FStrataBSDF BSDF, float2 E)
+{
+	FStrataImportanceSampleResult Sample = (FStrataImportanceSampleResult)0;
+
+	float PDF = 0.0f;
+	const uint BSDFType = BSDF_GETTYPE(BSDF);
+	switch (BSDFType)
+	{
+		case STRATA_BSDF_TYPE_SLAB:
+		{
+			const float3 DiffuseColor	= SLAB_DIFFUSEALBEDO(BSDFContext.BSDF);
+			const float3 F0 			= SLAB_F0(BSDFContext.BSDF);
+			const float3 F90 			= SLAB_F90(BSDFContext.BSDF);
+
+			// We assume a cosine hemisphere sampling is enough for any roughness.
+			// We also assume that this will work just as well for volumetric (considering it is an isotropic phase function and we are interesting in sampling mostly the hemisphere and not the layers below)
+			float4 ImportanceSample = CosineSampleHemisphere(E);
+			Sample.DiffuseDirection = mul(ImportanceSample.xyz, BSDFContext.TangentBasis);
+			Sample.DiffusePDF = ImportanceSample.w;
+			PDF = Sample.DiffusePDF;
+
+			const float SafeRoughness = MakeRoughnessSafe(SLAB_ROUGHNESS(BSDFContext.BSDF));
+			const bool bHasAnisotropy = BSDF_GETHASANISOTROPY(BSDFContext.BSDF);
+			float4 TangentH = 0;
+			if (bHasAnisotropy)
+			{
+				float2 Alpha = 0;
+				GetAnisotropicRoughness(SafeRoughness, SLAB_ANISOTROPY(BSDFContext.BSDF), Alpha.x, Alpha.y);
+				TangentH = ImportanceSampleVisibleGGX_aniso(UniformSampleDisk(E), Alpha, BSDFContext.TangentV);
+			}
+			else
+			{
+				TangentH = ImportanceSampleVisibleGGX(UniformSampleDisk(E), Pow4(SafeRoughness), BSDFContext.TangentV);
+			}
+
+			// STRATA_TODO take into account Haziness
+			// STRATA_TODO take into account Fuzz: Per "Production Friendly Microfacet Sheen BRDF", uniform hemispherical sampling gives good result as the roughness is usually high and avoid issue at grazing angle.
+			// STRATA_TODO take into account Two sided material
+
+			const float HPDF = TangentH.w;
+			const float3 H = mul(TangentH.xyz, BSDFContext.TangentBasis);
+			const float VoH = saturate(dot(BSDFContext.V, H));
+
+			Sample.SpecularDirection = 2 * dot(BSDFContext.V, H) * H - BSDFContext.V;
+			Sample.SpecularPDF = RayPDFToReflectionRayPDF(VoH, HPDF);
+			PDF = Sample.SpecularPDF;
+			break;
+		}
+
+		case STRATA_BSDF_TYPE_HAIR:
+		{
+			// STRATA_TODO do something better when we get there with Lumen, and evaluate the different researched solution (e.g. Importance Sampling for Physically-Based Hair Fiber Models)
+			float4 ImportanceSample = CosineSampleHemisphere(E);
+			Sample.DiffuseDirection = mul(ImportanceSample.xyz, BSDFContext.TangentBasis);
+			PDF = ImportanceSample.w;
+			break;
+		}
+
+		//case STRATA_BSDF_TYPE_VOLUMETRICFOGCLOUD:
+		//case STRATA_BSDF_TYPE_UNLIT:
+		//case STRATA_BSDF_TYPE_SINGLELAYERWATER:
+		//Nothing to do in this case because these BSDF are evaluated in other specialised passes.
+		//break;
+	}
+
+	//StrataUpdateBSDFContext(BSDFContext, Sample.Direction);
+	//Sample.Eval = StrataEvaluateBSDF(BSDFContext);
+	//Sample.Eval.PDF = PDF;	// We override the pdf to make sure the compiler skips all pdf code from StrataEvaluateBSDF because GGXSample.w si the pdf already for instance.
+
+	return Sample;
+}
+
+FStrataImportanceSampleResult StrataImportanceSampleBSDF(FStrataPixelHeader StrataPixelHeader, FStrataBSDF BSDF, const FStrataAddressing StrataAddressing, float2 E, float3 CameraVector)
+{
+	FStrataImportanceSampleResult Sample = (FStrataImportanceSampleResult)0;
+
+	// Create a context from the information we have
+	const float3 V = -CameraVector;
+	FStrataBSDFContext BSDFContext = StrataCreateBSDFContext(StrataPixelHeader, BSDF, StrataAddressing, V);
+	return StrataImportanceSampleBSDF(BSDFContext, BSDF, E);
+}
+
+struct FStrataEnvLightResult
+{
+	float3 DiffuseNormal;
+	float3 DiffuseWeight;
+	float3 DiffuseBackFaceWeight;
+
+	float3 DiffuseColor;
+	float3 SpecularColor;
+
+	float3 SpecularDirection;
+	float3 SpecularWeight;
+	float  SpecularSafeRoughness;
+
+	// Specular haze maintains the same off peak specular direction as the non hazy specular lobe
+	float3 SpecularHazeWeight;
+	float  SpecularHazeSafeRoughness;
+	float  SSRReduction;
+
+	bool   bSubsurface; // True if we need to separate the subsurface light contribution for the screen space diffusion process.
+};
+
+FStrataEnvLightResult StrataEvaluateForEnvLight(FStrataBSDFContext BSDFContext, bool bEnableSpecular, bool bForceFullyRough)
+{
+	FStrataEnvLightResult StrataEnvLightResult = (FStrataEnvLightResult)0;
+
+	const uint BSDFType = BSDF_GETTYPE(BSDFContext.BSDF);
+	switch (BSDFType)
+	{
+		case STRATA_BSDF_TYPE_SLAB:
+		{
+			float3 DiffuseColor		= SLAB_DIFFUSEALBEDO(BSDFContext.BSDF);
+			float3 F0 				= SLAB_F0(BSDFContext.BSDF);
+			float3 F90 				= SLAB_F90(BSDFContext.BSDF);
+
+			if (bForceFullyRough)
+			{
+				// When rendering reflection captures, the BSDF roughness has already been forced to 1 using View.RoughnessOverrideParameter (see StrataSanitizeBSDF).
+				EnvBRDFApproxFullyRough(DiffuseColor, F0, F90);
+			}
+
+			StrataEnvLightResult.DiffuseNormal = BSDFContext.N;
+			StrataEnvLightResult.bSubsurface = BSDF_GETHASSSS(BSDFContext.BSDF) > 0;
+
+			float SafeRoughness = MakeRoughnessSafe(SLAB_ROUGHNESS(BSDFContext.BSDF));
+			float3 ThinFilmFresnelWeight = 1;
+
+			float3 EvalEnvBRDF = 0;
+			float3 DirectionalAlbedo_SpecularTransmission = 0;
+			{
+				FBxDFEnergyTerms SpecularEnergyTerms = ComputeGGXSpecEnergyTerms(SafeRoughness, BSDFContext.Context.NoV, F0, F90);
+				FBxDFEnergyTerms DiffuseEnergyTerms  = ComputeDiffuseEnergyTerms(SafeRoughness, BSDFContext.Context.NoV);
+				EvalEnvBRDF									= SpecularEnergyTerms.E;
+				DirectionalAlbedo_SpecularTransmission		= ComputeEnergyPreservation(SpecularEnergyTerms);
+				StrataEnvLightResult.DiffuseWeight			= DiffuseColor * DiffuseEnergyTerms.E * DirectionalAlbedo_SpecularTransmission;
+				StrataEnvLightResult.DiffuseColor			= DiffuseColor;
+			}
+
+			BRANCH
+			if (bEnableSpecular)
+			{
+				const float SpecularMicroOcclusion = ComputeSpecularMicroOcclusion(F0.g);
+
+				#if STRATA_FASTPATH==0
+				const bool bHasThinFilm = BSDF_GETHASTHINFILM(BSDFContext.BSDF);
+				if (bHasThinFilm)
+				{
+					float ThinFilmIOR = SLAB_THINFILM_IOR(BSDFContext.BSDF);
+					float ThinFilmThickness = SLAB_THINFILM_THICKNESS(BSDFContext.BSDF);
+					ThinFilmFresnelWeight = F_ThinFilm(BSDFContext.Context.NoV, BSDFContext.Context.NoL, BSDFContext.Context.VoH, F0, F90, ThinFilmIOR, ThinFilmThickness);
+					F0 = 1.f;
+				}
+				#endif
+				EvalEnvBRDF *= ThinFilmFresnelWeight;
+
+
+				#if STRATA_FASTPATH==0
+				const bool bHasAnisotropy = BSDF_GETHASANISOTROPY(BSDFContext.BSDF);
+				if (bHasAnisotropy)
+				{
+					// Modified the BSDF normal (and roughness)
+					const float Anisotropy = SLAB_ANISOTROPY(BSDFContext.BSDF);			
+					ModifyGGXAnisotropicNormalRoughness(BSDFContext.X, Anisotropy, SafeRoughness, BSDFContext.N, BSDFContext.V);
+
+					// Update context (only needs: NoL/SatNoL/R) with the new N
+					BSDFContext.Context.NoL = dot(BSDFContext.N, BSDFContext.L);
+					BSDFContext.SatNoL = saturate(BSDFContext.Context.NoL);
+					BSDFContext.R = 2 * dot(BSDFContext.V, BSDFContext.N) * BSDFContext.N - BSDFContext.V;
+				}
+				#endif
+
+				StrataEnvLightResult.SpecularDirection = StrataGetOffSpecularPeakReflectionDir(BSDFContext.N, BSDFContext.R, SafeRoughness);
+				StrataEnvLightResult.SpecularWeight = EvalEnvBRDF * SpecularMicroOcclusion;
+				StrataEnvLightResult.SpecularSafeRoughness = SafeRoughness;
+				StrataEnvLightResult.SpecularColor = F0;
+
+				#if STRATA_FASTPATH==0
+				const bool bHasHaziness = BSDF_GETHASHAZINESS(BSDFContext.BSDF);
+				if (bHasHaziness)
+				{
+					// Smoothly fade in haziness while fading out SSR to make sure we do not add energy and avoid popping.
+					const float Haziness = SLAB_HAZINESS(BSDFContext.BSDF);
+					const float HazinessFadeIn = saturate(Haziness / 0.1f);
+					StrataEnvLightResult.SSRReduction = lerp(0.0f, SPECULAR_HAZINESS_WEIGHT, HazinessFadeIn);
+
+					// Apply blend factor on the sharp specular contribution
+					StrataEnvLightResult.SpecularWeight *= lerp(1.0f, (1.0f - SPECULAR_HAZINESS_WEIGHT), HazinessFadeIn);
+
+					// Compute the second specular weight and roughness
+					float SafeRoughnessHaze = ComputeHazyLobeRoughness(SafeRoughness, Haziness);
+
+					// Compute the directional albedo for hazy specular
+					FBxDFEnergyTerms EnergyTerms = ComputeGGXSpecEnergyTerms(SafeRoughnessHaze, BSDFContext.Context.NoV, F0, F90);
+					const float3 EvalEnvBRDFHaze = ThinFilmFresnelWeight * EnergyTerms.E;
+					StrataEnvLightResult.SpecularHazeWeight = lerp(0.0f, SPECULAR_HAZINESS_WEIGHT, HazinessFadeIn) * EvalEnvBRDFHaze * SpecularMicroOcclusion;
+					StrataEnvLightResult.SpecularHazeSafeRoughness = SafeRoughnessHaze;
+				}
+				#endif
+			}
+
+			#if STRATA_FASTPATH==0
+			BRANCH
+			if (BSDF_GETISSIMPLEVOLUME(BSDFContext.BSDF))
+			{
+				FParticipatingMedia PM = StrataSlabCreateParticipatingMedia(DiffuseColor, SLAB_SSSDMFP(BSDFContext.BSDF));
+				const float DiffuseToVolumeBlend = StrataSlabDiffuseToVolumeBlend(PM);
+
+				// The environment response of has been measured for an hemisphere having a uniform radiance of 1. 
+				// This DirectionalAlbedo also contains the integral over the hemisphere according to the phase function.
+				// The spherical harmonic used for environment lighting contains the diffuse integral over the hemisphere as DiffLambert = int_{\omega} {1 * NoL d\Omega} = PI.
+				// We do not want to be affected by the NoL term here since The DirectionalAlbedo also contains the integral over the hemisphere according to the phase function.
+				// Integral of a value=1 over the Hemisphere is int_{\omega} {1  d\Omega} = 2PI.
+				// So, as an approximation, we recover the uniform hemisphere luminance as UniformEnvL = DiffLambert * (1 / PI) * (2 * PI).
+				// We consider that the diffuse integration of the environment SH over the hemisphere multiplied with the light response will be a good approximation similar to the "split sum integral".
+				float3 SlabDirectionalAlbedo = IsotropicMediumSlabEnvDirectionalAlbedo(PM) * ((1 / PI)* (2 * PI));
+
+			#if 1
+				// Because the default EnvBRDF does not account for multiple scattering, we rescale the participating media response according to EnvBRDF.
+				// This is to ensure a monotone light response behavior when transitioning from the Diffuse to the Volumetric model (without that, multiple scattering can result in higher luminance while trnasitionning from diffuse to volume light model)
+				// STRATA_TODO: We should NOT have to do that. This should be investigated futher...
+				const float MaxDiffuseWeight = max3(StrataEnvLightResult.DiffuseWeight.x, StrataEnvLightResult.DiffuseWeight.y, StrataEnvLightResult.DiffuseWeight.z);
+				const float MaxSlabDirectionalAlbedo = max3(SlabDirectionalAlbedo.x, SlabDirectionalAlbedo.y, SlabDirectionalAlbedo.z);
+				if (MaxDiffuseWeight < MaxSlabDirectionalAlbedo)
+				{
+					// We only want to do that when the slab light response is higher than the diffse response, so that when the mfp is large (and scattering low), the light response still work correctly according to thickness and MFP.
+					SlabDirectionalAlbedo *= MaxDiffuseWeight / MaxSlabDirectionalAlbedo;
+				}
+			#endif
+
+				// The diffuse is attenuated by the GGX interface SpecularTransmission.
+				SlabDirectionalAlbedo *= DirectionalAlbedo_SpecularTransmission;
+
+				StrataEnvLightResult.DiffuseWeight = lerp(StrataEnvLightResult.DiffuseWeight, SlabDirectionalAlbedo, DiffuseToVolumeBlend);
+				// We keep the same normal
+				StrataEnvLightResult.bSubsurface = false;
+			}
+			#endif
+			
+
+			#if STRATA_FASTPATH==0
+			BRANCH
+			if (BSDF_GETISTHIN(BSDFContext.BSDF))
+			{
+				FParticipatingMedia PM = StrataSlabCreateParticipatingMedia(DiffuseColor, SLAB_SSSDMFP(BSDFContext.BSDF));
+
+				// We consider single scattering and perpendicular to the surface light transmittance.
+				// Using BackFaceNoL instead of 1 for TransmittanceNoL would be more correct but it gives some high frequency details looking weird without multiple scattering.
+				const float TransmittanceNoL = 1.0f;
+				const float3 SlabTransmittance = IsotropicMediumSlabTransmittance(PM, STRATA_SIMPLEVOLUME_THICKNESS_M, TransmittanceNoL);
+
+				// We recover the transmitted luminance from as the back face Lambert affected by the transmittance.
+				// The MFP is specified on the slab node and then transmittance recoved from it.
+				// We assume the back face diffuse albedo is white=1 and no diffusion happens at this stage.
+				const float3 BackFaceWhiteDiffuseColor = float3(1.0f, 1.0f, 1.0f);
+
+				// The diffuse is attenuated by the slab transmittance and the GGX interface SpecularTransmission.
+				StrataEnvLightResult.DiffuseBackFaceWeight = Diffuse_Lambert(BackFaceWhiteDiffuseColor) * SlabTransmittance * DirectionalAlbedo_SpecularTransmission;
+
+				// At this stage, StrataEnvLightResult.bSubsurface should have been setup correctly already if SSS is enabled to be applied on a thin surface.
+			}
+			#endif
+
+			#if STRATA_FASTPATH==0
+			BRANCH
+			if (BSDF_GETHASFUZZ(BSDFContext.BSDF))
+			{
+				const float Fuzz = SLAB_FUZZ_AMOUNT(BSDFContext.BSDF);
+				const float3 FuzzColor  = SLAB_FUZZ_COLOR(BSDFContext.BSDF);
+
+				// This should be a lerp, but SkyLightDiffuse from ReflectionEnvironmentPixelShader.usf add the contribution...
+				// STRATA_TODO fix the Fuzz model
+				//StrataEnvLightResult.DiffuseWeight = lerp(StrataEnvLightResult.DiffuseWeight, FuzzColor, Fuzz);
+				StrataEnvLightResult.DiffuseWeight += FuzzColor * Fuzz;
+				StrataEnvLightResult.DiffuseColor = saturate(StrataEnvLightResult.DiffuseColor + FuzzColor * Fuzz);
+				// Fuzz does not affect throughput.
+				break;
+			}
+			#endif
+
+			break;
+		}
+
+#if STRATA_FASTPATH==0
+
+		case STRATA_BSDF_TYPE_HAIR:
+		{
+			FGBufferData GBuffer	= (FGBufferData)0;
+			GBuffer.BaseColor		= HAIR_BASECOLOR(BSDFContext.BSDF);
+			GBuffer.Specular		= HAIR_SPECULAR(BSDFContext.BSDF);
+			GBuffer.Roughness		= HAIR_ROUGHNESS(BSDFContext.BSDF);
+			GBuffer.Metallic		= HAIR_SCATTER(BSDFContext.BSDF);
+			GBuffer.CustomData.z	= HAIR_BACKLIT(BSDFContext.BSDF);
+			GBuffer.ShadingModelID	= SHADINGMODELID_HAIR;
+			GBuffer.WorldNormal		= BSDFContext.N;
+			
+			float BacklitEnabled = 0.0f;
+			float Area = 0.2;
+			uint2 Random = uint2(0, 0);
+			float TransmissionShadow = 1.0f;
+			FHairTransmittanceData TransmittanceData = InitHairTransmittanceData(true);
+
+			const float3 N = BSDFContext.N;
+			const float3 V = BSDFContext.V;
+			float3 L = normalize(V - N * dot(V, N));
+			StrataEnvLightResult.DiffuseNormal = L;
+
+			StrataEnvLightResult.DiffuseWeight = PI * HairShading(GBuffer, L, V, N, TransmissionShadow, TransmittanceData, BacklitEnabled, Area, Random);
+			// No specular environment contribution as of today if not using the special HairStrand render path.
+			// So no need to apply bForceFullyRough neither.
+			break;
+		}
+
+		//case STRATA_BSDF_TYPE_VOLUMETRICFOGCLOUD:
+		//case STRATA_BSDF_TYPE_UNLIT:
+		//case STRATA_BSDF_TYPE_SINGLELAYERWATER:
+		//Nothing to do in this case because these BSDF are evaluated in other specialised passes.
+		//break;
+#endif
+	}
+
+	return StrataEnvLightResult;
+}
+
+FThreeBandSHVector StrataBSDFToSH(FStrataBSDFContext BSDFContext)
+{
+	FThreeBandSHVector SHVector;
+
+	const uint BSDFType = BSDF_GETTYPE(BSDFContext.BSDF);
+	if (BSDFType == STRATA_BSDF_TYPE_HAIR)
+	{
+		// Hack to avoid culling directions that hair will sample
+		SHVector = (FThreeBandSHVector)0;
+		SHVector.V0.x = 1.0f;
+	}
+	else
+	{
+		SHVector = CalcDiffuseTransferSH3(BSDFContext.N, 1.0f);
+	}
+
+	// STRATA_TODO adapt the SH to BSDFs
+	return SHVector;
+}
+
+
